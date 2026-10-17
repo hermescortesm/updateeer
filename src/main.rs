@@ -1,3 +1,4 @@
+mod mas;
 mod model;
 mod pages;
 mod queue;
