@@ -1,3 +1,9 @@
 target/
 .DS_Store
 .env
+
+
+# Added by cargo
+
+/target
+.claude/worktrees/
