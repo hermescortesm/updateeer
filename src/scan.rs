@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-use crate::mas;
+use crate::{local, mas};
 use crate::model::{App, Source};
 
 const BREW_PATHS: [&str; 2] = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"];
@@ -111,6 +111,7 @@ fn merge(brew: Option<Result<Vec<App>, String>>, mas: Option<Result<Vec<App>, St
     if !worked {
         return Err(if text.is_empty() { "No hay Homebrew ni mas instalados".into() } else { text });
     }
+    local::enrich(&mut apps);
     apps.sort_by_key(|a| a.name.to_lowercase());
     Ok((apps, (!text.is_empty()).then_some(text)))
 }
@@ -209,7 +210,7 @@ pub fn hue(name: &str) -> f32 {
 }
 
 fn app(id: String, name: &str, vendor: &str, from: String, to: String) -> App {
-    App { id, name: name.into(), vendor: vendor.into(), from, to, source: Source::Homebrew, size_mb: None, hue: hue(name) }
+    App { id, name: name.into(), vendor: vendor.into(), from, to, source: Source::Homebrew, size_mb: None, hue: hue(name), bundle: None, installed_at: None }
 }
 
 fn parse_outdated(json: &str, leaves: &HashSet<&str>) -> Result<Vec<App>, String> {
@@ -240,6 +241,13 @@ fn apply_cask_info(apps: &mut [App], json: &str) {
             if let Some(host) = c["homepage"].as_str().and_then(domain) {
                 a.vendor = clean(&host);
             }
+            a.bundle = c["artifacts"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|art| art["app"][0].as_str())
+                .find(|n| n.ends_with(".app") && !n.contains('/') && !n.starts_with('.'))
+                .map(String::from);
         }
     }
 }

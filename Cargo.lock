@@ -2260,6 +2260,7 @@ name = "updateeer"
 version = "0.1.0"
 dependencies = [
  "eframe",
+ "png",
  "serde_json",
 ]
 

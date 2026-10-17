@@ -4,7 +4,9 @@ use std::thread;
 
 use eframe::egui::{self, Align, Color32, Frame, Layout, RichText, ScrollArea, Sense, Stroke, Ui, Vec2};
 
-use crate::model::App;
+use std::time::SystemTime;
+
+use crate::model::{self, App};
 use crate::scan;
 use crate::settings::HOURS;
 use crate::theme::*;
@@ -44,8 +46,8 @@ fn list_row(ui: &mut Ui) -> (egui::Rect, f32, f32) {
     (rect, rect.left() + 18.0, rect.right() - 18.0)
 }
 
-fn name_cell(ui: &mut Ui, rect: egui::Rect, left: f32, app: &App) {
-    cell(ui, rect, left, left + 40.0, Layout::left_to_right(Align::Center), |ui| widgets::tile(ui, app));
+fn name_cell(ui: &mut Ui, rect: egui::Rect, left: f32, app: &App, icon: Option<&egui::TextureHandle>) {
+    cell(ui, rect, left, left + 40.0, Layout::left_to_right(Align::Center), |ui| widgets::tile(ui, app, icon));
     cell(ui, rect, left + 54.0, left + 264.0, Layout::top_down(Align::Min), |ui| {
         ui.add_space(15.0);
         ui.spacing_mut().item_spacing.y = 3.0;
@@ -72,7 +74,10 @@ impl UpdatesApp {
         let Ok(result) = rx.try_recv() else { return };
         self.installed_rx = None;
         match result {
-            Ok((apps, _)) => self.installed = apps,
+            Ok((apps, _)) => {
+                self.request_icons(&apps);
+                self.installed = apps;
+            }
             Err(e) => self.installed_error = Some(e),
         }
     }
@@ -116,7 +121,7 @@ impl UpdatesApp {
                         if ui.interact(rect, ui.make_persistent_id("open"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                             open = Some(app.clone());
                         }
-                        name_cell(ui, rect, left, app);
+                        name_cell(ui, rect, left, app, self.icons.get(&app.id));
                         cell(ui, rect, left + 290.0, right - 100.0, Layout::left_to_right(Align::Center), |ui| {
                             ui.label(RichText::new(widgets::short_version(&app.from, 40)).monospace().size(13.0).color(TEXT_2));
                         });
@@ -151,7 +156,7 @@ impl UpdatesApp {
         // Same rule as the list: no actions while a scan is about to replace the queue.
         let can_update = is_update && matches!(status, Status::Available | Status::Failed) && !self.scanning();
         ui.horizontal(|ui| {
-            widgets::tile_sized(ui, &app, 64.0);
+            widgets::tile_sized(ui, &app, self.icons.get(&app.id), 64.0);
             ui.add_space(8.0);
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = 6.0;
@@ -196,6 +201,10 @@ impl UpdatesApp {
             ("Estado", state),
             ("Versión instalada", app.from.clone()),
         ];
+        if let Some(t) = app.installed_at {
+            let when = format!("{} · {}", model::date(t), model::ago(t, SystemTime::now()));
+            rows.push(("Instalada", when));
+        }
         if is_update {
             rows.push(("Versión nueva", app.to.clone()));
             rows.push(("Tamaño de descarga", crate::model::format_size(app.size_mb)));
@@ -233,7 +242,7 @@ impl UpdatesApp {
                     let app = &entry.app;
                     ui.push_id(k, |ui| {
                         let (rect, left, right) = list_row(ui);
-                        name_cell(ui, rect, left, app);
+                        name_cell(ui, rect, left, app, self.icons.get(&app.id));
                         cell(ui, rect, left + 290.0, right - 160.0, Layout::left_to_right(Align::Center), |ui| {
                             ui.spacing_mut().item_spacing.x = 8.0;
                             ui.label(RichText::new(&app.from).monospace().size(13.0).color(FAINT));

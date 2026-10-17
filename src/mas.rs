@@ -63,6 +63,8 @@ fn parse(out: &str, outdated: bool) -> Vec<App> {
                 to: scan::clean(to.trim()),
                 source: Source::AppStore,
                 size_mb: None,
+                bundle: None,
+                installed_at: None,
             })
         })
         .collect()
