@@ -1,6 +1,8 @@
 mod model;
+mod pages;
 mod queue;
 mod scan;
+mod settings;
 mod theme;
 mod ui;
 mod upgrade;

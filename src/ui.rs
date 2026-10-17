@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::thread;
 
 use eframe::egui::{
@@ -10,6 +10,7 @@ use eframe::egui::{
 
 use crate::model::{self, App, Source};
 use crate::queue::{Queue, Status};
+use crate::settings::Settings;
 use crate::{scan, upgrade};
 use crate::theme::*;
 use crate::widgets::{self, Icon, Kind};
@@ -20,17 +21,41 @@ enum Filter {
     Only(Source),
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Page {
+    Updates,
+    Installed,
+    History,
+    Settings,
+}
+
+/// One finished upgrade of this session.
+pub struct Entry {
+    pub app: App,
+    pub error: Option<String>,
+}
+
+type Scan = Receiver<Result<Vec<App>, String>>;
+
 pub struct UpdatesApp {
     apps: Vec<App>,
     selected: HashSet<String>,
-    query: String,
+    pub(crate) query: String,
     filter: Filter,
     queue: Queue,
-    ctx: egui::Context,
-    scan_rx: Option<Receiver<Result<Vec<App>, String>>>,
+    pub(crate) ctx: egui::Context,
+    scan_rx: Option<Scan>,
     scan_error: Option<String>,
     done_tx: Sender<(String, Result<(), String>)>,
     done_rx: Receiver<(String, Result<(), String>)>,
+    last_scan: Instant,
+    pub(crate) page: Page,
+    pub(crate) settings: Settings,
+    pub(crate) installed: Vec<App>,
+    pub(crate) installed_rx: Option<Scan>,
+    pub(crate) installed_stale: bool,
+    pub(crate) installed_error: Option<String>,
+    pub(crate) history: Vec<Entry>,
 }
 
 const CONCURRENCY: usize = 2;
@@ -49,6 +74,14 @@ impl UpdatesApp {
             scan_error: None,
             done_tx,
             done_rx,
+            last_scan: Instant::now(),
+            page: Page::Updates,
+            settings: Settings::load(),
+            installed: Vec::new(),
+            installed_rx: None,
+            installed_stale: true,
+            installed_error: None,
+            history: Vec::new(),
         };
         app.start_scan();
         app
@@ -62,6 +95,7 @@ impl UpdatesApp {
         if self.scanning() || self.queue.is_busy() {
             return;
         }
+        self.last_scan = Instant::now();
         let (tx, rx) = mpsc::channel();
         let ctx = self.ctx.clone();
         thread::spawn(move || {
@@ -105,7 +139,24 @@ impl eframe::App for UpdatesApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.poll_scan();
         while let Ok((id, result)) = self.done_rx.try_recv() {
+            let error = result.as_ref().err().cloned();
             self.queue.finish(&id, result);
+            // A failed first attempt is retried silently: only final outcomes make history.
+            let app = self.apps.iter().find(|a| a.id == id);
+            match (self.queue.status(&id), app) {
+                (Status::Done, Some(a)) => {
+                    self.history.push(Entry { app: a.clone(), error: None });
+                    self.installed_stale = true;
+                }
+                (Status::Failed, Some(a)) => self.history.push(Entry { app: a.clone(), error }),
+                _ => {}
+            }
+        }
+        if self.settings.auto {
+            if self.last_scan.elapsed() >= Duration::from_secs(self.settings.hours as u64 * 3600) {
+                self.start_scan();
+            }
+            ui.request_repaint_after(Duration::from_secs(60));
         }
         if self.queue.is_busy() {
             self.queue.creep(ui.input(|i| i.stable_dt));
@@ -126,7 +177,12 @@ impl eframe::App for UpdatesApp {
             .show(ui, |ui| self.sidebar(ui));
         egui::CentralPanel::default()
             .frame(Frame::new().fill(BG).inner_margin(Margin { left: 40, right: 40, top: 40, bottom: 28 }))
-            .show(ui, |ui| self.main(ui));
+            .show(ui, |ui| match self.page {
+                Page::Updates => self.main(ui),
+                Page::Installed => self.installed_page(ui),
+                Page::History => self.history_page(ui),
+                Page::Settings => self.settings_page(ui),
+            });
     }
 }
 
@@ -140,10 +196,18 @@ impl UpdatesApp {
         });
         ui.add_space(22.0);
         ui.spacing_mut().item_spacing.y = 2.0;
-        widgets::nav_item(ui, Icon::Download, "Actualizaciones", true, Some(self.queue.available_count()));
-        widgets::nav_item(ui, Icon::Grid, "Instaladas", false, None);
-        widgets::nav_item(ui, Icon::Clock, "Historial", false, None);
-        widgets::nav_item(ui, Icon::Sliders, "Ajustes", false, None);
+        let badge = Some(self.queue.available_count());
+        for (page, icon, label) in [
+            (Page::Updates, Icon::Download, "Actualizaciones"),
+            (Page::Installed, Icon::Grid, "Instaladas"),
+            (Page::History, Icon::Clock, "Historial"),
+            (Page::Settings, Icon::Sliders, "Ajustes"),
+        ] {
+            let badge = if page == Page::Updates { badge } else { None };
+            if widgets::nav_item(ui, icon, label, self.page == page, badge).clicked() {
+                self.page = page;
+            }
+        }
         ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
             Frame::new()
                 .fill(Color32::from_rgb(0x17, 0x19, 0x1C))
@@ -154,7 +218,8 @@ impl UpdatesApp {
                     ui.set_width(ui.available_width());
                     ui.spacing_mut().item_spacing.y = 4.0;
                     ui.label(RichText::new("Búsqueda automática").size(12.0).family(semibold()).color(TEXT_2));
-                    ui.label(RichText::new("Cada 6 horas, en segundo plano").size(12.0).color(FAINT));
+                    let text = if self.settings.auto { format!("Cada {} h, con la app abierta", self.settings.hours) } else { "Desactivada".into() };
+                    ui.label(RichText::new(text).size(12.0).color(FAINT));
                 });
         });
     }
@@ -232,19 +297,7 @@ impl UpdatesApp {
                             }
                         });
                     });
-                let field = ui.add(
-                    TextEdit::singleline(&mut self.query)
-                        .font(FontId::proportional(14.0))
-                        .hint_text("Buscar app…")
-                        .desired_width(ui.available_width())
-                        .margin(Margin { left: 40, right: 14, top: 12, bottom: 13 }),
-                );
-                if field.has_focus() {
-                    let glow = Color32::from_rgba_unmultiplied(0xFF, 0x8A, 0x2A, 41);
-                    ui.painter().rect_stroke(field.rect.expand(2.0), CornerRadius::same(12), Stroke::new(4.0, glow), egui::StrokeKind::Outside);
-                }
-                let c = Pos2::new(field.rect.left() + 14.0 + 8.0, field.rect.center().y);
-                widgets::icon(ui, Rect::from_center_size(c, Vec2::splat(16.0)), Icon::Search, FAINT, 2.2);
+                search_field(ui, &mut self.query);
             });
         });
         ui.add_space(22.0);
@@ -355,7 +408,24 @@ impl UpdatesApp {
     }
 }
 
-fn segment(ui: &mut Ui, label: &str, on: bool) -> egui::Response {
+/// Search box with icon and focus glow; fills the width left in the current layout.
+pub(crate) fn search_field(ui: &mut Ui, query: &mut String) {
+    let field = ui.add(
+        TextEdit::singleline(query)
+            .font(FontId::proportional(14.0))
+            .hint_text("Buscar app…")
+            .desired_width(ui.available_width())
+            .margin(Margin { left: 40, right: 14, top: 12, bottom: 13 }),
+    );
+    if field.has_focus() {
+        let glow = Color32::from_rgba_unmultiplied(0xFF, 0x8A, 0x2A, 41);
+        ui.painter().rect_stroke(field.rect.expand(2.0), CornerRadius::same(12), Stroke::new(4.0, glow), egui::StrokeKind::Outside);
+    }
+    let c = Pos2::new(field.rect.left() + 14.0 + 8.0, field.rect.center().y);
+    widgets::icon(ui, Rect::from_center_size(c, Vec2::splat(16.0)), Icon::Search, FAINT, 2.2);
+}
+
+pub(crate) fn segment(ui: &mut Ui, label: &str, on: bool) -> egui::Response {
     let color = if on { TEXT } else { FAINT };
     let galley = ui.painter().layout_no_wrap(label.into(), FontId::new(13.0, semibold()), color);
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(galley.size().x + 28.0, 34.0), Sense::click());
@@ -367,7 +437,7 @@ fn segment(ui: &mut Ui, label: &str, on: bool) -> egui::Response {
 }
 
 /// A child ui over the horizontal slice `x0..x1` of a row.
-fn cell(ui: &mut Ui, row: Rect, x0: f32, x1: f32, layout: Layout, add: impl FnOnce(&mut Ui)) {
+pub(crate) fn cell(ui: &mut Ui, row: Rect, x0: f32, x1: f32, layout: Layout, add: impl FnOnce(&mut Ui)) {
     let r = Rect::from_min_max(Pos2::new(x0, row.top()), Pos2::new(x1, row.bottom()));
     let mut c = ui.new_child(UiBuilder::new().id_salt(x0.to_bits()).max_rect(r).layout(layout));
     add(&mut c);
@@ -430,6 +500,8 @@ fn row_inner(ui: &mut Ui, app: &App, status: Status, error: Option<&str>, select
         Status::Updating(p) => {
             ui.vertical(|ui| {
                 ui.set_width(150.0);
+                // Content is ~26px tall in a 68px row: push it to the vertical center.
+                ui.add_space(21.0);
                 ui.spacing_mut().item_spacing.y = 6.0;
                 ui.horizontal(|ui| {
                     let phase = if p < 70.0 { "Descargando" } else { "Instalando" };

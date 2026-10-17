@@ -127,7 +127,21 @@ pub fn logo(ui: &mut Ui, size: f32) {
     }
 }
 
-pub fn nav_item(ui: &mut Ui, ic: Icon, label: &str, active: bool, badge: Option<usize>) {
+/// On/off switch. `changed()` is set on the returned response when it was flipped.
+pub fn toggle(ui: &mut Ui, on: &mut bool) -> Response {
+    let (rect, mut resp) = ui.allocate_exact_size(Vec2::new(44.0, 26.0), Sense::click());
+    if resp.clicked() {
+        *on = !*on;
+        resp.mark_changed();
+    }
+    let bg = if *on { ACCENT } else { Color32::from_white_alpha(31) };
+    ui.painter().rect_filled(rect, CornerRadius::same(13), bg);
+    let x = if *on { rect.right() - 13.0 } else { rect.left() + 13.0 };
+    ui.painter().circle_filled(Pos2::new(x, rect.center().y), 9.0, if *on { ON_ACCENT } else { TEXT });
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+pub fn nav_item(ui: &mut Ui, ic: Icon, label: &str, active: bool, badge: Option<usize>) -> Response {
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 40.0), Sense::click());
     let r = CornerRadius::same(10);
     if active {
@@ -144,6 +158,7 @@ pub fn nav_item(ui: &mut Ui, ic: Icon, label: &str, active: bool, badge: Option<
         ui.painter().rect_filled(b, CornerRadius::same(11), ACCENT);
         ui.painter().text(b.center(), Align2::CENTER_CENTER, n.to_string(), FontId::new(12.0, semibold()), ON_ACCENT);
     }
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 pub fn tile(ui: &mut Ui, app: &App) {

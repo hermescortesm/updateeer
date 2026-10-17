@@ -18,11 +18,12 @@ pub const SCAN_TIMEOUT: Duration = Duration::from_secs(120);
 pub const UPGRADE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 /// Runs brew (absolute path, no shell, no stdin) with a timeout and capped output.
+pub fn brew_path() -> Option<&'static str> {
+    BREW_PATHS.into_iter().find(|p| Path::new(p).exists())
+}
+
 pub fn brew(args: &[&str], timeout: Duration, auto_update: bool) -> Result<String, String> {
-    let bin = BREW_PATHS
-        .iter()
-        .find(|p| Path::new(p).exists())
-        .ok_or("Homebrew no está instalado")?;
+    let bin = brew_path().ok_or("Homebrew no está instalado")?;
     let mut cmd = Command::new(bin);
     cmd.args(args)
         .env("HOMEBREW_NO_ENV_HINTS", "1")
@@ -90,6 +91,45 @@ pub fn scan() -> Result<Vec<App>, String> {
     }
     apps.sort_by_key(|a| a.name.to_lowercase());
     Ok(apps)
+}
+
+/// Everything installed through Homebrew: casks plus the formulae the user asked for.
+pub fn installed() -> Result<Vec<App>, String> {
+    let leaves = brew(&["leaves"], SCAN_TIMEOUT, false)?;
+    // `leaves` may print `user/tap/name`; `list` prints the short name.
+    let leaves: HashSet<&str> = leaves.lines().map(|l| l.rsplit('/').next().unwrap_or(l)).collect();
+    let formulae = brew(&["list", "--formula", "--versions"], SCAN_TIMEOUT, false)?;
+    let casks = brew(&["list", "--cask", "--versions"], SCAN_TIMEOUT, false)?;
+    let mut apps = parse_list("formula", &formulae, &leaves);
+    apps.extend(parse_list("cask", &casks, &leaves));
+
+    let tokens: Vec<&str> = apps.iter().filter_map(|a| a.id.strip_prefix("cask:")).collect();
+    if !tokens.is_empty() {
+        let mut args = vec!["info", "--cask", "--json=v2"];
+        args.extend(tokens);
+        // Display names are a nicety: keep the tokens if this fails.
+        if let Ok(json) = brew(&args, SCAN_TIMEOUT, false) {
+            apply_cask_info(&mut apps, &json);
+        }
+    }
+    apps.sort_by_key(|a| a.name.to_lowercase());
+    Ok(apps)
+}
+
+/// Parses `brew list --versions` lines (`name v1 v2`); the last version is the newest.
+fn parse_list(kind: &str, out: &str, leaves: &HashSet<&str>) -> Vec<App> {
+    out.lines()
+        .filter_map(|l| {
+            let mut it = l.split_whitespace();
+            let name = it.next().filter(|n| safe_token(n))?;
+            // Casks append build ids after a comma ("3.21.13,<hash>").
+            let version = it.last()?.split(',').next()?;
+            if kind == "formula" && !leaves.contains(name) {
+                return None;
+            }
+            Some(app(format!("{kind}:{name}"), name, "Homebrew", clean(version), String::new()))
+        })
+        .collect()
 }
 
 /// Brew names are `[a-z0-9@._+-]`, optionally `user/tap/name`. Rejects anything that could
@@ -186,6 +226,16 @@ mod tests {
     }
 
     #[test]
+    fn parses_list_and_hides_dependencies() {
+        let leaves = HashSet::from(["node"]);
+        let out = "node 22.9.0 22.10.0\nicu4c 75.1\n--evil 1\nlonely\n";
+        let apps = parse_list("formula", out, &leaves);
+        assert_eq!(apps.len(), 1);
+        assert_eq!((apps[0].id.as_str(), apps[0].from.as_str()), ("formula:node", "22.10.0"));
+        assert_eq!(parse_list("cask", "iterm2 3.5.0\n", &leaves)[0].id, "cask:iterm2");
+    }
+
+    #[test]
     fn token_rules() {
         assert!(safe_token("node@22"));
         assert!(safe_token("user/tap/engram"));
@@ -218,6 +268,16 @@ mod tests {
     fn live() {
         for a in scan().unwrap() {
             println!("{:<28} {:<24} {} -> {}", a.name, a.vendor, a.from, a.to);
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn live_installed() {
+        let apps = installed().unwrap();
+        println!("{} installed", apps.len());
+        for a in apps.iter().take(15) {
+            println!("{:<28} {:<24} {}", a.name, a.vendor, a.from);
         }
     }
 }
