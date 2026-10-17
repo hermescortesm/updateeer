@@ -37,27 +37,34 @@ fn install_fonts(ctx: &egui::Context) {
     for (name, bytes) in embedded {
         fonts.font_data.insert(name.into(), Arc::new(FontData::from_static(bytes)));
     }
-    // Fallback for scripts the subset lacks (CJK, accents in app names), read from the OS
-    // at runtime so it costs nothing in the binary.
-    let fallback = ["/System/Library/Fonts/Hiragino Sans GB.ttc", "/System/Library/Fonts/PingFang.ttc", "/System/Library/Fonts/Helvetica.ttc"]
-        .into_iter()
-        .find_map(|p| std::fs::read(p).ok());
-    let has_fallback = fallback.is_some();
+    set_families(&mut fonts, false);
+    ctx.set_fonts(fonts.clone());
+
+    // Fallback for scripts the subset lacks (CJK, accents in app names). These OS fonts are
+    // tens of MB, so they load off the main thread and are added once ready.
+    let ctx = ctx.clone();
+    std::thread::spawn(move || {
+        let paths = ["/System/Library/Fonts/Hiragino Sans GB.ttc", "/System/Library/Fonts/Helvetica.ttc"];
+        let Some(bytes) = paths.into_iter().find_map(|p| std::fs::read(p).ok()) else { return };
+        fonts.font_data.insert("os-fallback".into(), Arc::new(FontData::from_owned(bytes)));
+        set_families(&mut fonts, true);
+        ctx.set_fonts(fonts);
+        ctx.request_repaint();
+    });
+}
+
+fn set_families(fonts: &mut FontDefinitions, fallback: bool) {
     let chain = |own: &str| {
         let mut v = vec![own.to_string()];
-        if has_fallback {
+        if fallback {
             v.push("os-fallback".into());
         }
         v
     };
-    if let Some(bytes) = fallback {
-        fonts.font_data.insert("os-fallback".into(), Arc::new(FontData::from_owned(bytes)));
-    }
     fonts.families.insert(FontFamily::Proportional, chain("geist"));
     fonts.families.insert(FontFamily::Monospace, chain("geist-mono"));
     fonts.families.insert(semibold(), chain("geist-semibold"));
     fonts.families.insert(display(), chain("bricolage"));
-    ctx.set_fonts(fonts);
 }
 
 pub fn apply(ctx: &egui::Context) {

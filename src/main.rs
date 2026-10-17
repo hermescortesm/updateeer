@@ -11,7 +11,7 @@ fn main() -> eframe::Result {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("Updateeer")
             .with_inner_size([1200.0, 780.0])
-            .with_min_inner_size([900.0, 600.0]),
+            .with_min_inner_size([1180.0, 640.0]),
         ..Default::default()
     };
     eframe::run_native(

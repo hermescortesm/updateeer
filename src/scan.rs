@@ -1,7 +1,10 @@
 //! Finds outdated apps. Today: Homebrew casks and the formulae the user installed on purpose.
 use std::collections::HashSet;
 use std::path::Path;
+use std::io::Read;
 use std::process::{Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
@@ -9,28 +12,73 @@ use crate::model::{App, Source};
 
 const BREW_PATHS: [&str; 2] = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"];
 
-pub fn brew(args: &[&str]) -> Result<String, String> {
-    // Absolute path, no shell: nothing from PATH or user text gets interpreted.
+/// Output cap per stream: a runaway brew must not eat memory.
+const MAX_OUTPUT: u64 = 4 * 1024 * 1024;
+pub const SCAN_TIMEOUT: Duration = Duration::from_secs(120);
+pub const UPGRADE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
+/// Runs brew (absolute path, no shell, no stdin) with a timeout and capped output.
+pub fn brew(args: &[&str], timeout: Duration, auto_update: bool) -> Result<String, String> {
     let bin = BREW_PATHS
         .iter()
         .find(|p| Path::new(p).exists())
         .ok_or("Homebrew no está instalado")?;
-    let out = Command::new(bin)
-        .args(args)
+    let mut cmd = Command::new(bin);
+    cmd.args(args)
         .env("HOMEBREW_NO_ENV_HINTS", "1")
         // Never wait on a prompt (e.g. sudo): fail instead of hanging.
         .stdin(Stdio::null())
-        .output()
-        .map_err(|e| e.to_string())?;
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if !auto_update {
+        cmd.env("HOMEBREW_NO_AUTO_UPDATE", "1").env("HOMEBREW_NO_INSTALL_CLEANUP", "1");
     }
-    String::from_utf8(out.stdout).map_err(|e| e.to_string())
+    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
+    let (out_h, err_h) = (capture(child.stdout.take()), capture(child.stderr.take()));
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait().map_err(|e| e.to_string())? {
+            Some(st) => break st,
+            None if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("Homebrew tardó demasiado y se canceló".into());
+            }
+            None => thread::sleep(Duration::from_millis(100)),
+        }
+    };
+    let out = out_h.join().unwrap_or_default();
+    let err = err_h.join().unwrap_or_default();
+    if !status.success() {
+        return Err(tail(&String::from_utf8_lossy(&err)));
+    }
+    String::from_utf8(out).map_err(|e| e.to_string())
+}
+
+/// Reads a stream on its own thread, up to MAX_OUTPUT bytes.
+fn capture(stream: Option<impl Read + Send + 'static>) -> thread::JoinHandle<Vec<u8>> {
+    thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(mut s) = stream {
+            let _ = s.by_ref().take(MAX_OUTPUT).read_to_end(&mut buf);
+            // Keep draining so a chatty brew never blocks on a full pipe.
+            let _ = std::io::copy(&mut s, &mut std::io::sink());
+        }
+        buf
+    })
+}
+
+/// Last few lines of an error, so a tooltip never shows pages of brew output.
+fn tail(s: &str) -> String {
+    let lines: Vec<&str> = s.trim().lines().collect();
+    let t = lines[lines.len().saturating_sub(5)..].join("\n");
+    let skip = t.chars().count().saturating_sub(400);
+    t.chars().skip(skip).collect()
 }
 
 pub fn scan() -> Result<Vec<App>, String> {
-    let outdated = brew(&["outdated", "--greedy", "--json=v2"])?;
-    let leaves = brew(&["leaves"])?;
+    let outdated = brew(&["outdated", "--greedy", "--json=v2"], SCAN_TIMEOUT, true)?;
+    let leaves = brew(&["leaves"], SCAN_TIMEOUT, true)?;
     let leaves: HashSet<&str> = leaves.lines().collect();
     let mut apps = parse_outdated(&outdated, &leaves)?;
 
@@ -38,15 +86,29 @@ pub fn scan() -> Result<Vec<App>, String> {
     if !tokens.is_empty() {
         let mut args = vec!["info", "--cask", "--json=v2"];
         args.extend(tokens.iter().map(String::as_str));
-        apply_cask_info(&mut apps, &brew(&args)?);
+        apply_cask_info(&mut apps, &brew(&args, SCAN_TIMEOUT, true)?);
     }
     apps.sort_by_key(|a| a.name.to_lowercase());
     Ok(apps)
 }
 
-/// Brew names are `[a-z0-9@._+-]`; reject anything that could pass as a flag.
+/// Brew names are `[a-z0-9@._+-]`, optionally `user/tap/name`. Rejects anything that could
+/// pass as a flag or climb out of a path.
 pub fn safe_token(t: &str) -> bool {
-    !t.starts_with('-') && t.bytes().all(|b| b.is_ascii_alphanumeric() || b"@._+-".contains(&b))
+    !t.is_empty()
+        && t.split('/').count() <= 3
+        && t.split('/').all(|seg| {
+            !seg.is_empty()
+                && !seg.starts_with('-')
+                && seg != "."
+                && seg != ".."
+                && seg.bytes().all(|b| b.is_ascii_alphanumeric() || b"@._+-".contains(&b))
+        })
+}
+
+/// Text from brew that ends up on screen: no control characters, bounded length.
+fn clean(s: &str) -> String {
+    s.chars().filter(|c| !c.is_control()).take(80).collect()
 }
 
 fn first_version(v: &Value) -> String {
@@ -88,10 +150,11 @@ fn apply_cask_info(apps: &mut [App], json: &str) {
     for c in v["casks"].as_array().into_iter().flatten() {
         let (Some(token), Some(name)) = (c["token"].as_str(), c["name"][0].as_str()) else { continue };
         if let Some(a) = apps.iter_mut().find(|a| a.id.strip_prefix("cask:") == Some(token)) {
-            a.name = name.into();
-            a.hue = hue(name);
+            let name = clean(name);
+            a.hue = hue(&name);
+            a.name = name;
             if let Some(host) = c["homepage"].as_str().and_then(domain) {
-                a.vendor = host;
+                a.vendor = clean(&host);
             }
         }
     }
@@ -120,6 +183,24 @@ mod tests {
         let ids: Vec<_> = apps.iter().map(|a| a.id.as_str()).collect();
         assert_eq!(ids, ["formula:node", "cask:visual-studio-code"]);
         assert_eq!((apps[1].from.as_str(), apps[1].to.as_str()), ("1.93.1", "1.94.2"));
+    }
+
+    #[test]
+    fn token_rules() {
+        assert!(safe_token("node@22"));
+        assert!(safe_token("user/tap/engram"));
+        assert!(!safe_token("--evil"));
+        assert!(!safe_token("a/../b"));
+        assert!(!safe_token("a//b"));
+        assert!(!safe_token("a/b/c/d"));
+        assert!(!safe_token(""));
+    }
+
+    #[test]
+    fn error_tail_is_bounded() {
+        let long = (0..50).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        assert_eq!(tail(&long).lines().count(), 5);
+        assert!(tail(&"x".repeat(1000)).chars().count() <= 400);
     }
 
     #[test]
