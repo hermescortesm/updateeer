@@ -462,6 +462,7 @@ impl UpdatesApp {
                         to_update.extend(visible_ids.iter().filter(|id| self.selected.contains(*id)).cloned());
                     }
                 });
+                column_titles(ui);
                 ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
                     if rows.is_empty() {
                         ui.add_space(64.0);
@@ -582,6 +583,40 @@ pub(crate) fn cell(ui: &mut Ui, row: Rect, x0: f32, x1: f32, layout: Layout, add
     add(&mut c);
 }
 
+/// Horizontal anchors shared by the rows and the column titles.
+struct Cols {
+    left: f32,
+    right: f32,
+    chip_x: f32,
+    size_x: f32,
+    action_x: f32,
+}
+
+impl Cols {
+    fn of(rect: Rect) -> Self {
+        let (left, right) = (rect.left() + 18.0, rect.right() - 18.0);
+        let action_x = right - 150.0;
+        let size_x = action_x - 14.0 - 64.0;
+        let chip_x = size_x - 14.0 - 86.0;
+        Self { left, right, chip_x, size_x, action_x }
+    }
+}
+
+/// Titles above the columns of the updates table, aligned with `row_inner`.
+fn column_titles(ui: &mut Ui) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 34.0), Sense::hover());
+    ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, LINE));
+    let Cols { left, chip_x, size_x, .. } = Cols::of(rect);
+    let (ltr, rtl) = (Layout::left_to_right(Align::Center), Layout::right_to_left(Align::Center));
+    let title = |ui: &mut Ui, text: &str| {
+        ui.label(RichText::new(text).size(12.0).family(semibold()).color(FAINT));
+    };
+    cell(ui, rect, left + 86.0, left + 296.0, ltr, |ui| title(ui, "App"));
+    cell(ui, rect, left + 310.0, chip_x - 14.0, ltr, |ui| title(ui, "Versión"));
+    cell(ui, rect, chip_x, chip_x + 86.0, ltr, |ui| title(ui, "Origen"));
+    cell(ui, rect, size_x - 20.0, size_x + 64.0, rtl, |ui| title(ui, "Instalada"));
+}
+
 /// One 68px row. Returns (its own "Actualizar"/"Reintentar" was clicked, the row body was clicked).
 fn row(ui: &mut Ui, app: &App, status: Status, error: Option<&str>, selected: &mut bool, enabled: bool, icon: Option<&egui::TextureHandle>) -> (bool, bool) {
     // Per-app id scope: cells of different rows must not share widget ids.
@@ -595,13 +630,10 @@ fn row_inner(ui: &mut Ui, app: &App, status: Status, error: Option<&str>, select
         ui.painter().rect_filled(rect, 0, Color32::from_white_alpha(6));
     }
     ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, Color32::from_white_alpha(10)));
-    let (left, right) = (rect.left() + 18.0, rect.right() - 18.0);
+    let Cols { left, right, chip_x, size_x, action_x } = Cols::of(rect);
     let ltr = Layout::left_to_right(Align::Center);
     let rtl = Layout::right_to_left(Align::Center);
     let mut clicked = false;
-    let action_x = right - 150.0;
-    let size_x = action_x - 14.0 - 64.0;
-    let chip_x = size_x - 14.0 - 86.0;
     // Registered before the cells so the checkbox and buttons drawn over it win their own clicks.
     let body = Rect::from_min_max(Pos2::new(left + 32.0, rect.top()), Pos2::new(chip_x + 86.0, rect.bottom()));
     let shown = ui.interact(body, ui.make_persistent_id("open"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
