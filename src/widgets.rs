@@ -85,8 +85,8 @@ pub fn button(ui: &mut Ui, ic: Option<Icon>, label: &str, kind: Kind, h: f32, en
     let (size, pad, radius) = if h >= 44.0 { (14.0, 18.0, 11) } else { (13.0, 15.0, 9) };
     let (fill, hover, border, fg) = match kind {
         Kind::Primary => (ACCENT, Color32::from_rgb(0xFF, 0x9C, 0x48), Color32::TRANSPARENT, ON_ACCENT),
-        Kind::Ghost => (Color32::from_rgb(0x17, 0x19, 0x1C), Color32::from_rgb(0x22, 0x25, 0x2A), Color32::from_white_alpha(31), TEXT),
-        Kind::Soft => (BTN, Color32::from_rgb(0x22, 0x25, 0x2A), Color32::from_white_alpha(31), TEXT),
+        Kind::Ghost => (raised(), raised_hover(), tint(31), text()),
+        Kind::Soft => (btn(), raised_hover(), tint(31), text()),
     };
     let galley = ui.painter().layout_no_wrap(label.into(), FontId::new(size, semibold()), fg);
     let icon_w = if ic.is_some() { 17.0 + 10.0 } else { 0.0 };
@@ -134,10 +134,10 @@ pub fn toggle(ui: &mut Ui, on: &mut bool) -> Response {
         *on = !*on;
         resp.mark_changed();
     }
-    let bg = if *on { ACCENT } else { Color32::from_white_alpha(31) };
+    let bg = if *on { ACCENT } else { tint(31) };
     ui.painter().rect_filled(rect, CornerRadius::same(13), bg);
     let x = if *on { rect.right() - 13.0 } else { rect.left() + 13.0 };
-    ui.painter().circle_filled(Pos2::new(x, rect.center().y), 9.0, if *on { ON_ACCENT } else { TEXT });
+    ui.painter().circle_filled(Pos2::new(x, rect.center().y), 9.0, if *on { ON_ACCENT } else { text() });
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
@@ -147,9 +147,9 @@ pub fn nav_item(ui: &mut Ui, ic: Icon, label: &str, active: bool, badge: Option<
     if active {
         ui.painter().rect_filled(rect, r, Color32::from_rgba_unmultiplied(0xFF, 0x8A, 0x2A, 31));
     } else if resp.hovered() {
-        ui.painter().rect_filled(rect, r, Color32::from_white_alpha(13));
+        ui.painter().rect_filled(rect, r, tint(13));
     }
-    let color = if active { ACCENT_TEXT } else if resp.hovered() { TEXT } else { MUTED };
+    let color = if active { accent_text() } else if resp.hovered() { text() } else { muted() };
     icon(ui, Rect::from_min_size(rect.min + Vec2::new(10.0, 11.0), Vec2::splat(18.0)), ic, color, 2.0);
     let font = if active { semibold() } else { egui::FontFamily::Proportional };
     ui.painter().text(rect.left_center() + Vec2::new(40.0, 0.0), Align2::LEFT_CENTER, label, FontId::new(14.0, font), color);
@@ -189,14 +189,14 @@ pub fn short_version(v: &str, max: usize) -> String {
 
 pub fn chip(ui: &mut Ui, text: &str) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(86.0, 26.0), Sense::hover());
-    ui.painter().rect_filled(rect, CornerRadius::same(7), Color32::from_white_alpha(13));
-    ui.painter().text(rect.center(), Align2::CENTER_CENTER, text, FontId::new(12.0, semibold()), TEXT_2);
+    ui.painter().rect_filled(rect, CornerRadius::same(7), tint(13));
+    ui.painter().text(rect.center(), Align2::CENTER_CENTER, text, FontId::new(12.0, semibold()), text_2());
 }
 
 pub fn progress_bar(ui: &mut Ui, frac: f32, h: f32) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), h), Sense::hover());
     let r = CornerRadius::same((h / 2.0) as u8);
-    ui.painter().rect_filled(rect, r, Color32::from_white_alpha(20));
+    ui.painter().rect_filled(rect, r, tint(20));
     let mut fill = rect;
     fill.set_width(rect.width() * frac.clamp(0.0, 1.0));
     ui.painter().rect_filled(fill, r, ACCENT);

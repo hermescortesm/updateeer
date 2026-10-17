@@ -12,9 +12,9 @@ use crate::model::{self, App, Source};
 use crate::queue::{Queue, Status};
 use crate::history::{self, Entry};
 use crate::icons;
-use crate::settings::Settings;
+use crate::settings::{Settings, ThemeMode};
 use crate::{scan, upgrade};
-use crate::theme::*;
+use crate::theme::{self, *};
 use crate::widgets::{self, Icon, Kind};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -235,6 +235,14 @@ impl UpdatesApp {
 
 impl eframe::App for UpdatesApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let light = match self.settings.theme {
+            ThemeMode::Light => true,
+            ThemeMode::Dark => false,
+            ThemeMode::System => self.ctx.system_theme() == Some(egui::Theme::Light),
+        };
+        if light != theme::is_light() {
+            theme::apply(&self.ctx, light);
+        }
         self.poll_scan();
         self.poll_icons();
         while let Ok((id, result)) = self.done_rx.try_recv() {
@@ -276,10 +284,10 @@ impl eframe::App for UpdatesApp {
         egui::Panel::left("nav")
             .exact_size(236.0)
             .resizable(false)
-            .frame(Frame::new().fill(PANEL).inner_margin(Margin::symmetric(14, 16)))
+            .frame(Frame::new().fill(panel()).inner_margin(Margin::symmetric(14, 16)))
             .show(ui, |ui| self.sidebar(ui));
         egui::CentralPanel::default()
-            .frame(Frame::new().fill(BG).inner_margin(Margin { left: 40, right: 40, top: 40, bottom: 28 }))
+            .frame(Frame::new().fill(bg()).inner_margin(Margin { left: 40, right: 40, top: 40, bottom: 28 }))
             .show(ui, |ui| match self.page {
                 Page::Updates => self.main(ui),
                 Page::Installed => self.installed_page(ui),
@@ -315,8 +323,8 @@ impl UpdatesApp {
         }
         ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
             Frame::new()
-                .fill(Color32::from_rgb(0x17, 0x19, 0x1C))
-                .stroke(Stroke::new(1.0, Color32::from_white_alpha(15)))
+                .fill(raised())
+                .stroke(Stroke::new(1.0, tint(15)))
                 .corner_radius(12)
                 .inner_margin(14)
                 .show(ui, |ui| {
@@ -324,8 +332,8 @@ impl UpdatesApp {
                     ui.spacing_mut().item_spacing.y = 4.0;
                     // The parent layout is bottom-up, so the lines are added in reverse.
                     let text = if self.settings.auto { format!("Cada {} h, con la app abierta", self.settings.hours) } else { "Desactivada".into() };
-                    ui.label(RichText::new(text).size(12.0).color(FAINT));
-                    ui.label(RichText::new("Búsqueda automática").size(12.0).family(semibold()).color(TEXT_2));
+                    ui.label(RichText::new(text).size(12.0).color(faint()));
+                    ui.label(RichText::new("Búsqueda automática").size(12.0).family(semibold()).color(text_2()));
                 });
         });
     }
@@ -362,7 +370,7 @@ impl UpdatesApp {
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = 6.0;
                 ui.label(RichText::new("Actualizaciones").size(36.0).family(display()));
-                ui.label(RichText::new(summary).size(14.0).color(MUTED));
+                ui.label(RichText::new(summary).size(14.0).color(muted()));
             });
             ui.with_layout(Layout::right_to_left(Align::Max), |ui| {
                 ui.spacing_mut().item_spacing.x = 16.0;
@@ -387,8 +395,8 @@ impl UpdatesApp {
         ui.horizontal(|ui| {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 Frame::new()
-                    .fill(FIELD)
-                    .stroke(Stroke::new(1.0, Color32::from_white_alpha(20)))
+                    .fill(field())
+                    .stroke(Stroke::new(1.0, tint(20)))
                     .corner_radius(12)
                     .inner_margin(4)
                     .show(ui, |ui| {
@@ -433,8 +441,8 @@ impl UpdatesApp {
         let mut to_update: Vec<String> = Vec::new();
         let mut open: Option<App> = None;
         Frame::new()
-            .fill(PANEL)
-            .stroke(Stroke::new(1.0, LINE))
+            .fill(panel())
+            .stroke(Stroke::new(1.0, line()))
             .corner_radius(16)
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
@@ -444,7 +452,7 @@ impl UpdatesApp {
                 let n = selected_visible.len();
                 let all_on = !visible_ids.is_empty() && n == visible_ids.len();
                 let (head, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 52.0), Sense::hover());
-                ui.painter().hline(head.x_range(), head.bottom() - 0.5, Stroke::new(1.0, LINE));
+                ui.painter().hline(head.x_range(), head.bottom() - 0.5, Stroke::new(1.0, line()));
                 let mut inner = ui.new_child(UiBuilder::new().max_rect(head.shrink2(Vec2::new(18.0, 0.0))).layout(Layout::left_to_right(Align::Center)));
                 let mut on = all_on;
                 if inner.add_enabled(!visible_ids.is_empty(), Checkbox::new(&mut on, "")).changed() {
@@ -457,7 +465,7 @@ impl UpdatesApp {
                     1 => "1 seleccionada".to_string(),
                     n => format!("{n} seleccionadas"),
                 };
-                inner.label(RichText::new(label).size(13.0).family(semibold()).color(TEXT_2));
+                inner.label(RichText::new(label).size(13.0).family(semibold()).color(text_2()));
                 inner.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if widgets::button(ui, None, "Actualizar seleccionadas", Kind::Primary, 34.0, n > 0 && can_act).clicked() {
                         to_update.extend(visible_ids.iter().filter(|id| self.selected.contains(*id)).cloned());
@@ -469,10 +477,10 @@ impl UpdatesApp {
                         ui.add_space(64.0);
                         ui.vertical_centered(|ui| {
                             let (msg, color) = match (&self.scan_error, self.scanning(), self.apps.is_empty()) {
-                                (Some(e), false, _) => (format!("No se pudo buscar: {e}"), MUTED),
-                                (_, true, _) => ("Buscando…".into(), FAINT),
-                                (_, _, true) => ("No hay actualizaciones.".into(), FAINT),
-                                _ => ("Ninguna app coincide con tu búsqueda.".into(), FAINT),
+                                (Some(e), false, _) => (format!("No se pudo buscar: {e}"), muted()),
+                                (_, true, _) => ("Buscando…".into(), faint()),
+                                (_, _, true) => ("No hay actualizaciones.".into(), faint()),
+                                _ => ("Ninguna app coincide con tu búsqueda.".into(), faint()),
                             };
                             ui.label(RichText::new(msg).color(color));
                         });
@@ -510,7 +518,7 @@ impl UpdatesApp {
     fn batch_banner(&mut self, ui: &mut Ui) {
         let (done, total, pct) = self.queue.batch_progress();
         Frame::new()
-            .fill(Color32::from_rgb(0x1A, 0x15, 0x10))
+            .fill(banner_bg())
             .stroke(Stroke::new(1.0, Color32::from_rgba_unmultiplied(0xFF, 0x8A, 0x2A, 77)))
             .corner_radius(14)
             .inner_margin(Margin::symmetric(18, 16))
@@ -525,7 +533,7 @@ impl UpdatesApp {
                         ui.horizontal(|ui| {
                             ui.label(RichText::new(format!("Actualizadas {done} de {total}")).size(14.0).family(semibold()));
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                ui.label(RichText::new(format!("{}%", pct.round())).monospace().color(ACCENT_TEXT));
+                                ui.label(RichText::new(format!("{}%", pct.round())).monospace().color(accent_text()));
                             });
                         });
                         widgets::progress_bar(ui, pct / 100.0, 6.0);
@@ -540,7 +548,7 @@ impl UpdatesApp {
 
 /// Caption plus a dropdown over `options`.
 fn combo<T: PartialEq + Copy>(ui: &mut Ui, caption: &str, value: &mut T, options: &[(T, &str)]) {
-    ui.label(RichText::new(caption).size(12.5).color(FAINT));
+    ui.label(RichText::new(caption).size(12.5).color(faint()));
     let current = options.iter().find(|o| o.0 == *value).map_or("", |o| o.1);
     egui::ComboBox::from_id_salt(caption).selected_text(current).width(150.0).show_ui(ui, |ui| {
         for (v, label) in options {
@@ -563,15 +571,15 @@ pub(crate) fn search_field(ui: &mut Ui, query: &mut String) {
         ui.painter().rect_stroke(field.rect.expand(2.0), CornerRadius::same(12), Stroke::new(4.0, glow), egui::StrokeKind::Outside);
     }
     let c = Pos2::new(field.rect.left() + 14.0 + 8.0, field.rect.center().y);
-    widgets::icon(ui, Rect::from_center_size(c, Vec2::splat(16.0)), Icon::Search, FAINT, 2.2);
+    widgets::icon(ui, Rect::from_center_size(c, Vec2::splat(16.0)), Icon::Search, faint(), 2.2);
 }
 
 pub(crate) fn segment(ui: &mut Ui, label: &str, on: bool) -> egui::Response {
-    let color = if on { TEXT } else { FAINT };
+    let color = if on { text() } else { faint() };
     let galley = ui.painter().layout_no_wrap(label.into(), FontId::new(13.0, semibold()), color);
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(galley.size().x + 28.0, 34.0), Sense::click());
     if on {
-        ui.painter().rect_filled(rect, CornerRadius::same(8), Color32::from_rgb(0x2A, 0x2D, 0x33));
+        ui.painter().rect_filled(rect, CornerRadius::same(8), segment_on());
     }
     ui.painter().galley(Pos2::new(rect.left() + 14.0, rect.center().y - galley.size().y / 2.0), galley, color);
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -606,11 +614,11 @@ impl Cols {
 /// Titles above the columns of the updates table, aligned with `row_inner`.
 fn column_titles(ui: &mut Ui) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 34.0), Sense::hover());
-    ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, LINE));
+    ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, line()));
     let Cols { left, chip_x, size_x, .. } = Cols::of(rect);
     let (ltr, rtl) = (Layout::left_to_right(Align::Center), Layout::right_to_left(Align::Center));
     let title = |ui: &mut Ui, text: &str| {
-        ui.label(RichText::new(text).size(12.0).family(semibold()).color(FAINT));
+        ui.label(RichText::new(text).size(12.0).family(semibold()).color(faint()));
     };
     cell(ui, rect, left + 86.0, left + 296.0, ltr, |ui| title(ui, "App"));
     cell(ui, rect, left + 310.0, chip_x - 14.0, ltr, |ui| title(ui, "Versión"));
@@ -628,9 +636,9 @@ fn row_inner(ui: &mut Ui, app: &App, status: Status, error: Option<&str>, select
     let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 68.0), Sense::hover());
     // Not `resp.hovered()`: that goes false while the pointer is over the row's own buttons.
     if ui.rect_contains_pointer(rect) {
-        ui.painter().rect_filled(rect, 0, Color32::from_white_alpha(6));
+        ui.painter().rect_filled(rect, 0, tint(6));
     }
-    ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, Color32::from_white_alpha(10)));
+    ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, tint(10)));
     let Cols { left, right, chip_x, size_x, action_x } = Cols::of(rect);
     let ltr = Layout::left_to_right(Align::Center);
     let rtl = Layout::right_to_left(Align::Center);
@@ -647,7 +655,7 @@ fn row_inner(ui: &mut Ui, app: &App, status: Status, error: Option<&str>, select
         ui.add_space(15.0);
         ui.spacing_mut().item_spacing.y = 3.0;
         ui.add(egui::Label::new(RichText::new(&app.name).size(14.5).family(semibold())).truncate());
-        ui.add(egui::Label::new(RichText::new(&app.vendor).size(12.5).color(FAINT)).truncate());
+        ui.add(egui::Label::new(RichText::new(&app.vendor).size(12.5).color(faint())).truncate());
     });
 
     let (vx0, vx1) = (left + 310.0, chip_x - 14.0);
@@ -655,10 +663,10 @@ fn row_inner(ui: &mut Ui, app: &App, status: Status, error: Option<&str>, select
     let max_chars = (((vx1 - vx0 - 30.0) / 2.0) / 8.0).max(6.0) as usize;
     cell(ui, rect, vx0, vx1, ltr, |ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
-        ui.label(RichText::new(widgets::short_version(&app.from, max_chars)).monospace().size(13.0).color(FAINT)).on_hover_text(&app.from);
+        ui.label(RichText::new(widgets::short_version(&app.from, max_chars)).monospace().size(13.0).color(faint())).on_hover_text(&app.from);
         let (r, _) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
-        widgets::icon(ui, r, Icon::Arrow, FAINT, 2.2);
-        ui.label(RichText::new(widgets::short_version(&app.to, max_chars)).monospace().size(13.0).color(ACCENT_TEXT)).on_hover_text(&app.to);
+        widgets::icon(ui, r, Icon::Arrow, faint(), 2.2);
+        ui.label(RichText::new(widgets::short_version(&app.to, max_chars)).monospace().size(13.0).color(accent_text())).on_hover_text(&app.to);
     });
     cell(ui, rect, chip_x, chip_x + 86.0, ltr, |ui| widgets::chip(ui, app.source.label()));
     cell(ui, rect, size_x, size_x + 64.0, rtl, |ui| {
@@ -666,10 +674,10 @@ fn row_inner(ui: &mut Ui, app: &App, status: Status, error: Option<&str>, select
         match (app.size_mb, app.installed_at) {
             (None, Some(t)) => {
                 let short = model::ago(t, SystemTime::now()).replace("hace ", "");
-                ui.label(RichText::new(short).monospace().size(12.5).color(FAINT)).on_hover_text(format!("Instalada el {}", model::date(t)));
+                ui.label(RichText::new(short).monospace().size(12.5).color(faint())).on_hover_text(format!("Instalada el {}", model::date(t)));
             }
             _ => {
-                ui.label(RichText::new(model::format_size(app.size_mb)).monospace().size(12.5).color(FAINT));
+                ui.label(RichText::new(model::format_size(app.size_mb)).monospace().size(12.5).color(faint()));
             }
         }
     });
@@ -680,9 +688,9 @@ fn row_inner(ui: &mut Ui, app: &App, status: Status, error: Option<&str>, select
             clicked = widgets::button(ui, None, "Reintentar", Kind::Soft, 34.0, enabled).on_hover_text(tip).clicked();
         }
         Status::Queued => {
-            ui.label(RichText::new("En cola").size(13.0).color(FAINT));
+            ui.label(RichText::new("En cola").size(13.0).color(faint()));
             let (r, _) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
-            widgets::icon(ui, r, Icon::Clock, FAINT, 2.2);
+            widgets::icon(ui, r, Icon::Clock, faint(), 2.2);
         }
         Status::Updating(p) => {
             ui.vertical(|ui| {
@@ -692,18 +700,18 @@ fn row_inner(ui: &mut Ui, app: &App, status: Status, error: Option<&str>, select
                 ui.spacing_mut().item_spacing.y = 6.0;
                 ui.horizontal(|ui| {
                     let phase = if p < 70.0 { "Descargando" } else { "Instalando" };
-                    ui.label(RichText::new(phase).size(12.0).color(TEXT_2));
+                    ui.label(RichText::new(phase).size(12.0).color(text_2()));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        ui.label(RichText::new(format!("{}%", p.round())).monospace().size(12.0).color(ACCENT_TEXT));
+                        ui.label(RichText::new(format!("{}%", p.round())).monospace().size(12.0).color(accent_text()));
                     });
                 });
                 widgets::progress_bar(ui, p / 100.0, 5.0);
             });
         }
         Status::Done => {
-            ui.label(RichText::new("Actualizada").size(13.0).family(semibold()).color(OK));
+            ui.label(RichText::new("Actualizada").size(13.0).family(semibold()).color(ok()));
             let (r, _) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::hover());
-            widgets::icon(ui, r, Icon::Check, OK, 2.6);
+            widgets::icon(ui, r, Icon::Check, ok(), 2.6);
         }
     });
     (clicked, shown)

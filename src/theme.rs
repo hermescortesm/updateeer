@@ -1,20 +1,47 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use eframe::egui::{self, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, Stroke};
 
-pub const BG: Color32 = Color32::from_rgb(0x0D, 0x0E, 0x10);
-pub const PANEL: Color32 = Color32::from_rgb(0x12, 0x13, 0x16);
-pub const FIELD: Color32 = Color32::from_rgb(0x15, 0x17, 0x1A);
-pub const BTN: Color32 = Color32::from_rgb(0x1C, 0x1F, 0x23);
+/// Same in both themes.
 pub const ACCENT: Color32 = Color32::from_rgb(0xFF, 0x8A, 0x2A);
-pub const ACCENT_TEXT: Color32 = Color32::from_rgb(0xFF, 0xB0, 0x70);
 pub const ON_ACCENT: Color32 = Color32::from_rgb(0x1A, 0x0F, 0x05);
-pub const TEXT: Color32 = Color32::from_rgb(0xF2, 0xF1, 0xEE);
-pub const TEXT_2: Color32 = Color32::from_rgb(0xC9, 0xCB, 0xD0);
-pub const MUTED: Color32 = Color32::from_rgb(0xA3, 0xA6, 0xAC);
-pub const FAINT: Color32 = Color32::from_rgb(0x8B, 0x8E, 0x95);
-pub const OK: Color32 = Color32::from_rgb(0x8F, 0xE0, 0xB6);
-pub const LINE: Color32 = Color32::from_rgba_premultiplied(15, 15, 15, 15);
+
+static LIGHT: AtomicBool = AtomicBool::new(false);
+
+pub fn is_light() -> bool {
+    LIGHT.load(Ordering::Relaxed)
+}
+
+/// Colors that change with the theme: `name: dark, light`.
+macro_rules! palette {
+    ($($name:ident: $dark:expr, $light:expr;)*) => {
+        $(pub fn $name() -> Color32 { if is_light() { $light } else { $dark } })*
+    };
+}
+
+palette! {
+    bg: Color32::from_rgb(0x0D, 0x0E, 0x10), Color32::from_rgb(0xF5, 0xF4, 0xF1);
+    panel: Color32::from_rgb(0x12, 0x13, 0x16), Color32::from_rgb(0xFF, 0xFF, 0xFF);
+    field: Color32::from_rgb(0x15, 0x17, 0x1A), Color32::from_rgb(0xFF, 0xFF, 0xFF);
+    btn: Color32::from_rgb(0x1C, 0x1F, 0x23), Color32::from_rgb(0xEE, 0xEC, 0xE7);
+    raised: Color32::from_rgb(0x17, 0x19, 0x1C), Color32::from_rgb(0xFA, 0xF9, 0xF7);
+    raised_hover: Color32::from_rgb(0x22, 0x25, 0x2A), Color32::from_rgb(0xE9, 0xE7, 0xE1);
+    segment_on: Color32::from_rgb(0x2A, 0x2D, 0x33), Color32::from_rgb(0xE6, 0xE3, 0xDC);
+    banner_bg: Color32::from_rgb(0x1A, 0x15, 0x10), Color32::from_rgb(0xFF, 0xF1, 0xE2);
+    accent_text: Color32::from_rgb(0xFF, 0xB0, 0x70), Color32::from_rgb(0xB8, 0x4E, 0x00);
+    text: Color32::from_rgb(0xF2, 0xF1, 0xEE), Color32::from_rgb(0x15, 0x16, 0x1A);
+    text_2: Color32::from_rgb(0xC9, 0xCB, 0xD0), Color32::from_rgb(0x3A, 0x3D, 0x44);
+    muted: Color32::from_rgb(0xA3, 0xA6, 0xAC), Color32::from_rgb(0x5A, 0x5E, 0x66);
+    faint: Color32::from_rgb(0x8B, 0x8E, 0x95), Color32::from_rgb(0x74, 0x78, 0x80);
+    ok: Color32::from_rgb(0x8F, 0xE0, 0xB6), Color32::from_rgb(0x1B, 0x8A, 0x57);
+    line: Color32::from_white_alpha(15), Color32::from_black_alpha(22);
+}
+
+/// Overlay of the given strength: white on dark, black on light (hovers, borders, tracks).
+pub fn tint(alpha: u8) -> Color32 {
+    if is_light() { Color32::from_black_alpha(alpha) } else { Color32::from_white_alpha(alpha) }
+}
 
 pub fn semibold() -> FontFamily {
     FontFamily::Name("semibold".into())
@@ -67,15 +94,28 @@ fn set_families(fonts: &mut FontDefinitions, fallback: bool) {
     fonts.families.insert(display(), chain("bricolage"));
 }
 
-pub fn apply(ctx: &egui::Context) {
+/// Loads fonts and starts in the dark palette; the app switches it from the setting.
+pub fn install(ctx: &egui::Context) {
     install_fonts(ctx);
-    let mut v = egui::Visuals::dark();
-    v.panel_fill = BG;
-    v.window_fill = PANEL;
-    v.extreme_bg_color = FIELD;
-    v.override_text_color = Some(TEXT);
-    v.selection.bg_fill = ACCENT;
-    v.selection.stroke = Stroke::new(1.0, ACCENT);
+    apply(ctx, false);
+}
+
+/// Switches the whole palette and egui's visuals.
+pub fn apply(ctx: &egui::Context, light: bool) {
+    LIGHT.store(light, Ordering::Relaxed);
+    let mut v = if light { egui::Visuals::light() } else { egui::Visuals::dark() };
+    v.panel_fill = bg();
+    v.window_fill = panel();
+    v.extreme_bg_color = field();
+    v.override_text_color = Some(text());
+    // Selected text is drawn in `selection.stroke` color: keep it readable on the fill.
+    if light {
+        v.selection.bg_fill = Color32::from_rgb(0xFF, 0xCF, 0xA3);
+        v.selection.stroke = Stroke::new(1.0, ON_ACCENT);
+    } else {
+        v.selection.bg_fill = Color32::from_rgb(0xB5, 0x55, 0x12);
+        v.selection.stroke = Stroke::new(1.0, Color32::WHITE);
+    }
     let r = CornerRadius::same(10);
     for w in [
         &mut v.widgets.noninteractive,
@@ -85,12 +125,12 @@ pub fn apply(ctx: &egui::Context) {
     ] {
         w.corner_radius = r;
     }
-    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, LINE);
-    v.widgets.inactive.bg_stroke = Stroke::new(1.0, Color32::from_white_alpha(26));
-    v.widgets.inactive.bg_fill = BTN;
-    v.widgets.inactive.weak_bg_fill = BTN;
-    v.widgets.hovered.weak_bg_fill = Color32::from_rgb(0x22, 0x25, 0x2A);
-    v.widgets.hovered.bg_fill = Color32::from_rgb(0x22, 0x25, 0x2A);
+    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, line());
+    v.widgets.inactive.bg_stroke = Stroke::new(1.0, tint(26));
+    v.widgets.inactive.bg_fill = btn();
+    v.widgets.inactive.weak_bg_fill = btn();
+    v.widgets.hovered.weak_bg_fill = raised_hover();
+    v.widgets.hovered.bg_fill = raised_hover();
     ctx.set_visuals(v);
 }
 
