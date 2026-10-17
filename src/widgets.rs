@@ -161,12 +161,18 @@ pub fn nav_item(ui: &mut Ui, ic: Icon, label: &str, active: bool, badge: Option<
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-pub fn tile(ui: &mut Ui, app: &App) {
-    tile_sized(ui, app, 40.0);
+pub fn tile(ui: &mut Ui, app: &App, icon: Option<&egui::TextureHandle>) {
+    tile_sized(ui, app, icon, 40.0);
 }
 
-pub fn tile_sized(ui: &mut Ui, app: &App, size: f32) {
+/// The app's real icon when loaded, else a colored tile with its initial.
+pub fn tile_sized(ui: &mut Ui, app: &App, icon: Option<&egui::TextureHandle>, size: f32) {
     let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
+    if let Some(tex) = icon {
+        let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
+        ui.painter().image(tex.id(), rect, uv, Color32::WHITE);
+        return;
+    }
     ui.painter().rect_filled(rect, CornerRadius::same((size * 0.275) as u8), tile_color(app.hue));
     let initial = app.name.chars().next().unwrap_or('?').to_uppercase().to_string();
     ui.painter().text(rect.center(), Align2::CENTER_CENTER, initial, FontId::new(size * 0.425, semibold()), Color32::WHITE);

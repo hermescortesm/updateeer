@@ -1,6 +1,6 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use std::thread;
 
 use eframe::egui::{
@@ -10,6 +10,7 @@ use eframe::egui::{
 
 use crate::model::{self, App, Source};
 use crate::queue::{Queue, Status};
+use crate::icons;
 use crate::settings::Settings;
 use crate::{scan, upgrade};
 use crate::theme::*;
@@ -39,11 +40,44 @@ pub struct Entry {
 
 type Scan = Receiver<Result<scan::Found, String>>;
 
+/// Kind of thing: graphical apps vs command-line tools (Homebrew formulae).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Type {
+    All,
+    Apps,
+    Tools,
+}
+
+/// How long ago the installed version arrived.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Age {
+    Any,
+    Week,
+    Month,
+    Old,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Sort {
+    Name,
+    Newest,
+    Oldest,
+}
+
+type IconMsg = (String, Option<icons::Icon>);
+
 pub struct UpdatesApp {
     apps: Vec<App>,
     selected: HashSet<String>,
     pub(crate) query: String,
     filter: Filter,
+    kind: Type,
+    age: Age,
+    sort: Sort,
+    pub(crate) icons: HashMap<String, egui::TextureHandle>,
+    icon_asked: HashSet<String>,
+    icon_tx: Sender<IconMsg>,
+    icon_rx: Receiver<IconMsg>,
     pub(crate) queue: Queue,
     pub(crate) ctx: egui::Context,
     scan_rx: Option<Scan>,
@@ -68,11 +102,19 @@ const CONCURRENCY: usize = 2;
 impl UpdatesApp {
     pub fn new(ctx: egui::Context) -> Self {
         let (done_tx, done_rx) = mpsc::channel();
+        let (icon_tx, icon_rx) = mpsc::channel();
         let mut app = Self {
             apps: Vec::new(),
             selected: HashSet::new(),
             query: String::new(),
             filter: Filter::All,
+            kind: Type::All,
+            age: Age::Any,
+            sort: Sort::Name,
+            icons: HashMap::new(),
+            icon_asked: HashSet::new(),
+            icon_tx,
+            icon_rx,
             queue: Queue::new([], CONCURRENCY),
             ctx,
             scan_rx: None,
@@ -122,6 +164,7 @@ impl UpdatesApp {
         match result {
             Ok((apps, warning)) => {
                 self.scan_warning = warning;
+                self.request_icons(&apps);
                 self.queue = Queue::new(apps.iter().map(|a| a.id.clone()), CONCURRENCY);
                 self.apps = apps;
                 self.selected.clear();
@@ -130,24 +173,73 @@ impl UpdatesApp {
         }
     }
 
-    /// Indices into `apps` that pass the search and source filter.
+    /// Loads real icons in the background, once per app; textures are made in `ui()`.
+    pub(crate) fn request_icons(&mut self, apps: &[App]) {
+        let todo: Vec<App> = apps.iter().filter(|a| icons::wants_icon(a) && self.icon_asked.insert(a.id.clone())).cloned().collect();
+        if todo.is_empty() {
+            return;
+        }
+        let (tx, ctx) = (self.icon_tx.clone(), self.ctx.clone());
+        thread::spawn(move || {
+            for app in todo {
+                let _ = tx.send((app.id.clone(), icons::load(&app)));
+                ctx.request_repaint();
+            }
+        });
+    }
+
+    fn poll_icons(&mut self) {
+        while let Ok((id, icon)) = self.icon_rx.try_recv() {
+            if let Some(icons::Icon { size, rgba }) = icon {
+                let image = egui::ColorImage::from_rgba_unmultiplied(size, &rgba);
+                let tex = self.ctx.load_texture(&id, image, egui::TextureOptions::LINEAR);
+                self.icons.insert(id, tex);
+            }
+        }
+    }
+
+    /// Indices into `apps` that pass the search and filters, in the chosen order.
     fn visible(&self) -> Vec<usize> {
         let q = self.query.trim().to_lowercase();
-        (0..self.apps.len())
+        let now = SystemTime::now();
+        let days = |a: &App| a.installed_at.map(|t| model::days_ago(t, now));
+        let mut rows: Vec<usize> = (0..self.apps.len())
             .filter(|&i| {
                 let a = &self.apps[i];
+                let tool = a.id.starts_with("formula:");
                 (match self.filter {
                     Filter::All => true,
                     Filter::Only(s) => a.source == s,
+                }) && (match self.kind {
+                    Type::All => true,
+                    Type::Apps => !tool,
+                    Type::Tools => tool,
+                }) && (match self.age {
+                    Age::Any => true,
+                    Age::Week => days(a).is_some_and(|d| d <= 7),
+                    Age::Month => days(a).is_some_and(|d| d <= 30),
+                    Age::Old => days(a).is_some_and(|d| d > 90),
                 }) && (q.is_empty() || a.name.to_lowercase().contains(&q))
             })
-            .collect()
+            .collect();
+        // `apps` is already sorted by name; unknown dates always go last.
+        match self.sort {
+            Sort::Name => {}
+            Sort::Newest => rows.sort_by_key(|&i| (self.apps[i].installed_at.is_none(), std::cmp::Reverse(self.apps[i].installed_at))),
+            Sort::Oldest => rows.sort_by_key(|&i| (self.apps[i].installed_at.is_none(), self.apps[i].installed_at)),
+        }
+        rows
+    }
+
+    fn filters_active(&self) -> bool {
+        (self.kind, self.age, self.sort) != (Type::All, Age::Any, Sort::Name)
     }
 }
 
 impl eframe::App for UpdatesApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.poll_scan();
+        self.poll_icons();
         while let Ok((id, result)) = self.done_rx.try_recv() {
             let error = result.as_ref().err().cloned();
             self.queue.finish(&id, result);
@@ -228,12 +320,11 @@ impl UpdatesApp {
                 .inner_margin(14)
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    ui.vertical(|ui| {
-                        ui.spacing_mut().item_spacing.y = 4.0;
-                        ui.label(RichText::new("Búsqueda automática").size(12.0).family(semibold()).color(TEXT_2));
-                        let text = if self.settings.auto { format!("Cada {} h, con la app abierta", self.settings.hours) } else { "Desactivada".into() };
-                        ui.label(RichText::new(text).size(12.0).color(FAINT));
-                    });
+                    ui.spacing_mut().item_spacing.y = 4.0;
+                    // The parent layout is bottom-up, so the lines are added in reverse.
+                    let text = if self.settings.auto { format!("Cada {} h, con la app abierta", self.settings.hours) } else { "Desactivada".into() };
+                    ui.label(RichText::new(text).size(12.0).color(FAINT));
+                    ui.label(RichText::new("Búsqueda automática").size(12.0).family(semibold()).color(TEXT_2));
                 });
         });
     }
@@ -317,6 +408,18 @@ impl UpdatesApp {
                 search_field(ui, &mut self.query);
             });
         });
+        ui.add_space(12.0);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 10.0;
+            combo(ui, "Tipo", &mut self.kind, &[(Type::All, "Todo"), (Type::Apps, "Apps"), (Type::Tools, "Herramientas")]);
+            ui.add_space(8.0);
+            combo(ui, "Instalada", &mut self.age, &[(Age::Any, "Cualquiera"), (Age::Week, "Últimos 7 días"), (Age::Month, "Últimos 30 días"), (Age::Old, "Hace más de 3 meses")]);
+            ui.add_space(8.0);
+            combo(ui, "Orden", &mut self.sort, &[(Sort::Name, "Nombre"), (Sort::Newest, "Más recientes"), (Sort::Oldest, "Más antiguas")]);
+            if self.filters_active() && widgets::button(ui, None, "Limpiar", Kind::Soft, 34.0, true).clicked() {
+                (self.kind, self.age, self.sort) = (Type::All, Age::Any, Sort::Name);
+            }
+        });
         ui.add_space(22.0);
 
         let rows = self.visible();
@@ -378,7 +481,7 @@ impl UpdatesApp {
                         let mut sel = self.selected.contains(&app.id);
                         let was = sel;
                         let err = self.queue.error(&app.id);
-                        let (update, show) = row(ui, app, status, err, &mut sel, can_act);
+                        let (update, show) = row(ui, app, status, err, &mut sel, can_act, self.icons.get(&app.id));
                         if update {
                             to_update.push(app.id.clone());
                         }
@@ -433,6 +536,17 @@ impl UpdatesApp {
     }
 }
 
+/// Caption plus a dropdown over `options`.
+fn combo<T: PartialEq + Copy>(ui: &mut Ui, caption: &str, value: &mut T, options: &[(T, &str)]) {
+    ui.label(RichText::new(caption).size(12.5).color(FAINT));
+    let current = options.iter().find(|o| o.0 == *value).map_or("", |o| o.1);
+    egui::ComboBox::from_id_salt(caption).selected_text(current).width(150.0).show_ui(ui, |ui| {
+        for (v, label) in options {
+            ui.selectable_value(value, *v, *label);
+        }
+    });
+}
+
 /// Search box with icon and focus glow; fills the width left in the current layout.
 pub(crate) fn search_field(ui: &mut Ui, query: &mut String) {
     let field = ui.add(
@@ -469,12 +583,12 @@ pub(crate) fn cell(ui: &mut Ui, row: Rect, x0: f32, x1: f32, layout: Layout, add
 }
 
 /// One 68px row. Returns (its own "Actualizar"/"Reintentar" was clicked, the row body was clicked).
-fn row(ui: &mut Ui, app: &App, status: Status, error: Option<&str>, selected: &mut bool, enabled: bool) -> (bool, bool) {
+fn row(ui: &mut Ui, app: &App, status: Status, error: Option<&str>, selected: &mut bool, enabled: bool, icon: Option<&egui::TextureHandle>) -> (bool, bool) {
     // Per-app id scope: cells of different rows must not share widget ids.
-    ui.push_id(&app.id, |ui| row_inner(ui, app, status, error, selected, enabled)).inner
+    ui.push_id(&app.id, |ui| row_inner(ui, app, status, error, selected, enabled, icon)).inner
 }
 
-fn row_inner(ui: &mut Ui, app: &App, status: Status, error: Option<&str>, selected: &mut bool, enabled: bool) -> (bool, bool) {
+fn row_inner(ui: &mut Ui, app: &App, status: Status, error: Option<&str>, selected: &mut bool, enabled: bool, icon: Option<&egui::TextureHandle>) -> (bool, bool) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 68.0), Sense::hover());
     // Not `resp.hovered()`: that goes false while the pointer is over the row's own buttons.
     if ui.rect_contains_pointer(rect) {
@@ -495,7 +609,7 @@ fn row_inner(ui: &mut Ui, app: &App, status: Status, error: Option<&str>, select
     cell(ui, rect, left, left + 18.0, ltr, |ui| {
         ui.add_enabled(status == Status::Available, Checkbox::new(selected, ""));
     });
-    cell(ui, rect, left + 32.0, left + 72.0, ltr, |ui| widgets::tile(ui, app));
+    cell(ui, rect, left + 32.0, left + 72.0, ltr, |ui| widgets::tile(ui, app, icon));
     cell(ui, rect, left + 86.0, left + 296.0, Layout::top_down(Align::Min), |ui| {
         ui.add_space(15.0);
         ui.spacing_mut().item_spacing.y = 3.0;
@@ -515,7 +629,16 @@ fn row_inner(ui: &mut Ui, app: &App, status: Status, error: Option<&str>, select
     });
     cell(ui, rect, chip_x, chip_x + 86.0, ltr, |ui| widgets::chip(ui, app.source.label()));
     cell(ui, rect, size_x, size_x + 64.0, rtl, |ui| {
-        ui.label(RichText::new(model::format_size(app.size_mb)).monospace().size(12.5).color(FAINT));
+        // Download size when known, else how long ago this version was installed.
+        match (app.size_mb, app.installed_at) {
+            (None, Some(t)) => {
+                let short = model::ago(t, SystemTime::now()).replace("hace ", "");
+                ui.label(RichText::new(short).monospace().size(12.5).color(FAINT)).on_hover_text(format!("Instalada el {}", model::date(t)));
+            }
+            _ => {
+                ui.label(RichText::new(model::format_size(app.size_mb)).monospace().size(12.5).color(FAINT));
+            }
+        }
     });
     cell(ui, rect, action_x, right, rtl, |ui| match status {
         Status::Available => clicked = widgets::button(ui, None, "Actualizar", Kind::Soft, 34.0, enabled).clicked(),

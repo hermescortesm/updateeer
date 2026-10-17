@@ -1,3 +1,5 @@
+mod icons;
+mod local;
 mod mas;
 mod model;
 mod pages;
