@@ -6,6 +6,7 @@ use eframe::egui::{
 };
 
 use crate::model::{self, App, Source};
+use crate::queue::{Queue, Status};
 use crate::theme::*;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -19,33 +20,51 @@ pub struct UpdatesApp {
     selected: HashSet<String>,
     query: String,
     filter: Filter,
+    queue: Queue,
 }
+
+/// Simulated download speed until adapters report real progress.
+const SIM_MB_PER_SEC: f32 = 60.0;
+const CONCURRENCY: usize = 2;
 
 impl UpdatesApp {
     pub fn new() -> Self {
+        let apps = model::mock_apps();
         Self {
-            apps: model::mock_apps(),
+            queue: Queue::new(apps.iter().map(|a| a.id.clone()), CONCURRENCY),
+            apps,
             selected: HashSet::new(),
             query: String::new(),
             filter: Filter::All,
         }
     }
 
-    fn visible(&self) -> Vec<&App> {
+    /// Indices into `apps` that pass the search and source filter.
+    fn visible(&self) -> Vec<usize> {
         let q = self.query.trim().to_lowercase();
-        self.apps
-            .iter()
-            .filter(|a| match self.filter {
-                Filter::All => true,
-                Filter::Only(s) => a.source == s,
+        (0..self.apps.len())
+            .filter(|&i| {
+                let a = &self.apps[i];
+                (match self.filter {
+                    Filter::All => true,
+                    Filter::Only(s) => a.source == s,
+                }) && (q.is_empty() || a.name.to_lowercase().contains(&q))
             })
-            .filter(|a| q.is_empty() || a.name.to_lowercase().contains(&q))
             .collect()
     }
 }
 
 impl eframe::App for UpdatesApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        if self.queue.is_busy() {
+            let dt = ui.input(|i| i.stable_dt);
+            let apps = &self.apps;
+            self.queue.tick(|id| {
+                let mb = apps.iter().find(|a| a.id == id).map_or(100, |a| a.size_mb).max(1);
+                dt * SIM_MB_PER_SEC / mb as f32 * 100.0
+            });
+            ui.request_repaint();
+        }
         egui::Panel::left("nav")
             .exact_size(236.0)
             .resizable(false)
@@ -64,7 +83,7 @@ impl UpdatesApp {
             ui.label(RichText::new("Updateeer").size(20.0).strong());
         });
         ui.add_space(22.0);
-        let count = self.apps.len();
+        let count = self.queue.available_count();
         nav_item(ui, "Actualizaciones", true, Some(count));
         nav_item(ui, "Instaladas", false, None);
         nav_item(ui, "Historial", false, None);
@@ -84,25 +103,63 @@ impl UpdatesApp {
     }
 
     fn main(&mut self, ui: &mut egui::Ui) {
-        let available = self.apps.len();
-        let total_mb: u32 = self.apps.iter().map(|a| a.size_mb).sum();
+        let available = self.queue.available_count();
+        let total_mb: u32 = self
+            .apps
+            .iter()
+            .filter(|a| self.queue.status(&a.id) == Status::Available)
+            .map(|a| a.size_mb)
+            .sum();
+        let summary = if available > 0 {
+            format!("{available} disponibles · {}", model::format_size(total_mb))
+        } else if self.queue.is_busy() {
+            "Actualizando…".to_string()
+        } else {
+            "Todo al día".to_string()
+        };
 
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
                 ui.label(RichText::new("Actualizaciones").size(36.0).strong());
-                ui.label(
-                    RichText::new(format!("{available} disponibles · {}", model::format_size(total_mb)))
-                        .size(14.0)
-                        .color(MUTED),
-                );
+                ui.label(RichText::new(summary).size(14.0).color(MUTED));
             });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                // ponytail: buttons wired in feature/update-queue.
-                ui.add(primary_button("Actualizar todo"));
+                if ui.add_enabled(available > 0, primary_button("Actualizar todo")).clicked() {
+                    let ids: Vec<String> = self.queue.available().map(String::from).collect();
+                    self.queue.enqueue(ids.iter().map(String::as_str));
+                    self.selected.clear();
+                }
                 ui.add(Button::new(RichText::new("Buscar actualizaciones").strong()).min_size(Vec2::new(0.0, 44.0)));
             });
         });
         ui.add_space(22.0);
+
+        if self.queue.is_busy() {
+            let (done, total, pct) = self.queue.batch_progress();
+            Frame::new()
+                .fill(Color32::from_rgb(0x1A, 0x15, 0x10))
+                .stroke(Stroke::new(1.0, Color32::from_rgba_unmultiplied(0xFF, 0x8A, 0x2A, 77)))
+                .corner_radius(14)
+                .inner_margin(Margin::symmetric(18, 16))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.vertical(|ui| {
+                            ui.set_width(ui.available_width() - 100.0);
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(format!("Actualizadas {done} de {total}")).size(14.0).strong());
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    ui.label(RichText::new(format!("{}%", pct.round())).monospace().color(ACCENT_TEXT));
+                                });
+                            });
+                            progress_bar(ui, pct / 100.0, 6.0);
+                        });
+                        if ui.add(Button::new(RichText::new("Cancelar").size(13.0).strong()).min_size(Vec2::new(0.0, 36.0))).clicked() {
+                            self.queue.cancel();
+                        }
+                    });
+                });
+            ui.add_space(22.0);
+        }
 
         ui.horizontal(|ui| {
             ui.add(
@@ -130,7 +187,13 @@ impl UpdatesApp {
         });
         ui.add_space(22.0);
 
-        let visible_ids: Vec<String> = self.visible().iter().map(|a| a.id.clone()).collect();
+        let rows = self.visible();
+        let visible_ids: Vec<String> = rows
+            .iter()
+            .map(|&i| &self.apps[i])
+            .filter(|a| self.queue.status(&a.id) == Status::Available)
+            .map(|a| a.id.clone())
+            .collect();
         Frame::new()
             .fill(PANEL)
             .stroke(Stroke::new(1.0, LINE))
@@ -157,21 +220,25 @@ impl UpdatesApp {
                         ui.label(RichText::new(label).size(13.0).strong().color(TEXT_2));
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             ui.add_space(18.0);
-                            ui.add_enabled(n > 0, primary_button("Actualizar seleccionadas").min_size(Vec2::new(0.0, 34.0)));
+                            let b = primary_button("Actualizar seleccionadas").min_size(Vec2::new(0.0, 34.0));
+                            if ui.add_enabled(n > 0, b).clicked() {
+                                let ids: Vec<String> = self.selected.drain().collect();
+                                self.queue.enqueue(ids.iter().map(String::as_str));
+                            }
                         });
                     });
                 });
                 ui.separator();
                 ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-                    let rows: Vec<App> = self.visible().into_iter().cloned().collect();
                     if rows.is_empty() {
                         ui.add_space(64.0);
                         ui.vertical_centered(|ui| {
                             ui.label(RichText::new("Ninguna app coincide con tu búsqueda.").color(FAINT));
                         });
                     }
-                    for app in &rows {
-                        self.row(ui, app);
+                    for &i in &rows {
+                        let app = self.apps[i].clone();
+                        self.row(ui, &app);
                     }
                 });
             });
@@ -181,8 +248,9 @@ impl UpdatesApp {
         ui.allocate_ui(Vec2::new(ui.available_width(), 68.0), |ui| {
             ui.horizontal_centered(|ui| {
                 ui.add_space(18.0);
+                let status = self.queue.status(&app.id);
                 let mut on = self.selected.contains(&app.id);
-                if ui.checkbox(&mut on, "").changed() {
+                if ui.add_enabled(status == Status::Available, egui::Checkbox::new(&mut on, "")).changed() {
                     if on { self.selected.insert(app.id.clone()); } else { self.selected.remove(&app.id); }
                 }
                 tile(ui, app);
@@ -196,7 +264,35 @@ impl UpdatesApp {
                 ui.label(RichText::new(&app.to).monospace().size(13.0).color(ACCENT_TEXT));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.add_space(18.0);
-                    ui.add(Button::new(RichText::new("Actualizar").size(13.0).strong()).min_size(Vec2::new(0.0, 34.0)));
+                    ui.allocate_ui(Vec2::new(150.0, 34.0), |ui| {
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| match status {
+                            Status::Available => {
+                                let b = Button::new(RichText::new("Actualizar").size(13.0).strong()).min_size(Vec2::new(0.0, 34.0));
+                                if ui.add(b).clicked() {
+                                    self.queue.enqueue([app.id.as_str()]);
+                                    self.selected.remove(&app.id);
+                                }
+                            }
+                            Status::Queued => {
+                                ui.label(RichText::new("En cola").size(13.0).color(FAINT));
+                            }
+                            Status::Updating(p) => {
+                                ui.vertical(|ui| {
+                                    ui.horizontal(|ui| {
+                                        let phase = if p < 70.0 { "Descargando" } else { "Instalando" };
+                                        ui.label(RichText::new(phase).size(12.0).color(TEXT_2));
+                                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                            ui.label(RichText::new(format!("{}%", p.round())).monospace().size(12.0).color(ACCENT_TEXT));
+                                        });
+                                    });
+                                    progress_bar(ui, p / 100.0, 5.0);
+                                });
+                            }
+                            Status::Done => {
+                                ui.label(RichText::new("✓ Actualizada").size(13.0).strong().color(OK));
+                            }
+                        });
+                    });
                     ui.add_space(8.0);
                     ui.label(RichText::new(model::format_size(app.size_mb)).monospace().size(12.5).color(FAINT));
                     ui.add_space(8.0);
@@ -261,4 +357,13 @@ fn chip(ui: &mut egui::Ui, text: &str) {
     ui.painter().rect_filled(rect, CornerRadius::same(7), Color32::from_white_alpha(13));
     ui.painter().rect_stroke(rect, CornerRadius::same(7), Stroke::NONE, StrokeKind::Inside);
     ui.painter().text(rect.center(), Align2::CENTER_CENTER, text, FontId::proportional(12.0), TEXT_2);
+}
+
+fn progress_bar(ui: &mut egui::Ui, frac: f32, h: f32) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), h), Sense::hover());
+    let r = CornerRadius::same((h / 2.0) as u8);
+    ui.painter().rect_filled(rect, r, Color32::from_white_alpha(20));
+    let mut fill = rect;
+    fill.set_width(rect.width() * frac.clamp(0.0, 1.0));
+    ui.painter().rect_filled(fill, r, ACCENT);
 }

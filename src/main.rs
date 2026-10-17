@@ -1,4 +1,5 @@
 mod model;
+mod queue;
 mod theme;
 mod ui;
 
