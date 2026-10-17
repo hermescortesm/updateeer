@@ -10,6 +10,7 @@ mod pages;
 mod queue;
 mod scan;
 mod settings;
+mod setup;
 mod theme;
 mod tray;
 mod ui;

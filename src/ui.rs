@@ -12,11 +12,12 @@ use crate::model::{self, App, Source};
 use crate::queue::{Queue, Status};
 use crate::history::{self, Entry};
 use crate::native;
+use crate::setup;
 use crate::tray::{self, Tray};
 use crate::autostart;
 use crate::icons;
 use crate::settings::{Settings, ThemeMode};
-use crate::{scan, upgrade};
+use crate::{mas, scan, upgrade};
 use crate::theme::{self, *};
 use crate::widgets::{self, Icon, Kind};
 
@@ -62,6 +63,10 @@ enum Sort {
     Oldest,
 }
 
+fn detect_tools() -> (bool, bool) {
+    (scan::brew_path().is_some(), mas::path().is_some())
+}
+
 type IconMsg = (String, Option<icons::Icon>);
 
 pub struct UpdatesApp {
@@ -93,6 +98,11 @@ pub struct UpdatesApp {
     pub(crate) history: Vec<Entry>,
     tray: Option<Tray>,
     quitting: bool,
+    /// (Homebrew found, mas found).
+    tools: (bool, bool),
+    mas_install: Option<Receiver<Result<(), String>>>,
+    setup_error: Option<String>,
+    was_focused: bool,
     /// Frames left before hiding the window (started with `--background`).
     hide_in: Option<u8>,
     pub(crate) login: bool,
@@ -136,6 +146,10 @@ impl UpdatesApp {
             history: history::load(),
             tray: None,
             quitting: false,
+            tools: detect_tools(),
+            mas_install: None,
+            setup_error: None,
+            was_focused: true,
             hide_in: start_hidden.then_some(3),
             login: autostart::enabled(),
             login_error: None,
@@ -157,6 +171,7 @@ impl UpdatesApp {
         if self.scanning() || self.queue.is_busy() {
             return;
         }
+        self.tools = detect_tools();
         self.last_scan = Instant::now();
         let (tx, rx) = mpsc::channel();
         let ctx = self.ctx.clone();
@@ -259,6 +274,13 @@ impl eframe::App for UpdatesApp {
             theme::apply(&self.ctx, light);
         }
         self.menu_bar();
+        // The user may have installed a tool in Terminal: look again when the window is focused.
+        let focused = ui.input(|i| i.focused);
+        if focused && !self.was_focused {
+            self.tools = detect_tools();
+        }
+        self.was_focused = focused;
+        self.poll_mas_install();
         self.poll_scan();
         self.poll_icons();
         while let Ok((id, result)) = self.done_rx.try_recv() {
@@ -458,6 +480,9 @@ impl UpdatesApp {
             self.batch_banner(ui);
             ui.add_space(22.0);
         }
+        if self.setup_banner(ui) {
+            ui.add_space(22.0);
+        }
 
         ui.horizontal(|ui| {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -580,6 +605,87 @@ impl UpdatesApp {
                 self.selected.remove(id);
             }
         }
+    }
+
+    fn poll_mas_install(&mut self) {
+        let Some(rx) = &self.mas_install else { return };
+        let Ok(result) = rx.try_recv() else { return };
+        self.mas_install = None;
+        match result {
+            Ok(()) => {
+                self.tools = detect_tools();
+                self.start_scan();
+            }
+            Err(e) => self.setup_error = Some(e),
+        }
+    }
+
+    /// Offers to install Homebrew or `mas` (macOS). Nothing is installed without a click.
+    /// Returns whether it drew anything.
+    fn setup_banner(&mut self, ui: &mut Ui) -> bool {
+        let (brew, mas) = self.tools;
+        if !cfg!(target_os = "macos") || self.settings.hide_setup || (brew && mas) {
+            return false;
+        }
+        let installing = self.mas_install.is_some();
+        let (title, text, action) = if !brew {
+            (
+                "Falta Homebrew",
+                "Updateeer lo usa para buscar y actualizar tus apps. Se instala desde Terminal y te pedirá tu contraseña.",
+                "Instalar Homebrew",
+            )
+        } else {
+            (
+                "Falta mas para las apps de la App Store",
+                "Es una herramienta pequeña que se instala con Homebrew. Sin ella no se ven las actualizaciones de la App Store.",
+                "Instalar mas",
+            )
+        };
+        let mut install = false;
+        let mut dismiss = false;
+        Frame::new()
+            .fill(banner_bg())
+            .stroke(Stroke::new(1.0, Color32::from_rgba_unmultiplied(0xFF, 0x8A, 0x2A, 77)))
+            .corner_radius(14)
+            .inner_margin(Margin::symmetric(18, 16))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 12.0;
+                    ui.vertical(|ui| {
+                        ui.set_width(ui.available_width() - 300.0);
+                        ui.spacing_mut().item_spacing.y = 4.0;
+                        ui.label(RichText::new(title).size(14.0).family(semibold()));
+                        let detail = self.setup_error.clone().unwrap_or_else(|| text.to_string());
+                        ui.label(RichText::new(detail).size(13.0).color(muted()));
+                    });
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let label = if installing { "Instalando…" } else { action };
+                        install = widgets::button(ui, None, label, Kind::Primary, 36.0, !installing).clicked();
+                        dismiss = widgets::button(ui, None, "Ahora no", Kind::Soft, 36.0, !installing).clicked();
+                    });
+                });
+            });
+        if dismiss {
+            self.settings.hide_setup = true;
+            self.settings.save();
+        }
+        if install {
+            self.setup_error = None;
+            if !brew {
+                if let Err(e) = setup::open_homebrew_installer() {
+                    self.setup_error = Some(e);
+                }
+            } else {
+                let (tx, ctx) = (mpsc::channel(), self.ctx.clone());
+                let sender = tx.0;
+                thread::spawn(move || {
+                    let _ = sender.send(setup::install_mas());
+                    ctx.request_repaint();
+                });
+                self.mas_install = Some(tx.1);
+            }
+        }
+        true
     }
 
     fn batch_banner(&mut self, ui: &mut Ui) {
