@@ -4,6 +4,7 @@ mod scan;
 mod theme;
 mod ui;
 mod upgrade;
+mod widgets;
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {

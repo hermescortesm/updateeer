@@ -4,14 +4,15 @@ use std::time::Duration;
 use std::thread;
 
 use eframe::egui::{
-    self, Align, Align2, Button, CornerRadius, FontId, Frame, Layout, Margin, RichText, ScrollArea,
-    Color32, Sense, Stroke, TextEdit, Vec2,
+    self, Align, Checkbox, Color32, CornerRadius, FontId, Frame, Layout, Margin, Pos2, Rect, RichText,
+    ScrollArea, Sense, Stroke, TextEdit, Ui, UiBuilder, Vec2,
 };
 
 use crate::model::{self, App, Source};
 use crate::queue::{Queue, Status};
 use crate::{scan, upgrade};
 use crate::theme::*;
+use crate::widgets::{self, Icon, Kind};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Filter {
@@ -130,32 +131,35 @@ impl eframe::App for UpdatesApp {
 }
 
 impl UpdatesApp {
-    fn sidebar(&mut self, ui: &mut egui::Ui) {
+    fn sidebar(&mut self, ui: &mut Ui) {
+        ui.add_space(10.0);
         ui.horizontal(|ui| {
-            logo(ui, 26.0);
-            ui.label(RichText::new("Updateeer").size(20.0).strong());
+            ui.add_space(8.0);
+            widgets::logo(ui, 26.0);
+            ui.label(RichText::new("Updateeer").size(20.0).family(display()));
         });
         ui.add_space(22.0);
-        let count = self.queue.available_count();
-        nav_item(ui, "Actualizaciones", true, Some(count));
-        nav_item(ui, "Instaladas", false, None);
-        nav_item(ui, "Historial", false, None);
-        nav_item(ui, "Ajustes", false, None);
+        ui.spacing_mut().item_spacing.y = 2.0;
+        widgets::nav_item(ui, Icon::Download, "Actualizaciones", true, Some(self.queue.available_count()));
+        widgets::nav_item(ui, Icon::Grid, "Instaladas", false, None);
+        widgets::nav_item(ui, Icon::Clock, "Historial", false, None);
+        widgets::nav_item(ui, Icon::Sliders, "Ajustes", false, None);
         ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
             Frame::new()
-                .fill(BTN)
-                .stroke(Stroke::new(1.0, LINE))
+                .fill(Color32::from_rgb(0x17, 0x19, 0x1C))
+                .stroke(Stroke::new(1.0, Color32::from_white_alpha(15)))
                 .corner_radius(12)
                 .inner_margin(14)
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    ui.label(RichText::new("Búsqueda automática").size(12.0).strong().color(TEXT_2));
+                    ui.spacing_mut().item_spacing.y = 4.0;
+                    ui.label(RichText::new("Búsqueda automática").size(12.0).family(semibold()).color(TEXT_2));
                     ui.label(RichText::new("Cada 6 horas, en segundo plano").size(12.0).color(FAINT));
                 });
         });
     }
 
-    fn main(&mut self, ui: &mut egui::Ui) {
+    fn main(&mut self, ui: &mut Ui) {
         let available = self.queue.available_count();
         let total_mb: u32 = self
             .apps
@@ -178,18 +182,19 @@ impl UpdatesApp {
 
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
-                ui.label(RichText::new("Actualizaciones").size(36.0).strong());
+                ui.spacing_mut().item_spacing.y = 6.0;
+                ui.label(RichText::new("Actualizaciones").size(36.0).family(display()));
                 ui.label(RichText::new(summary).size(14.0).color(MUTED));
             });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.add_enabled(available > 0, primary_button("Actualizar todo")).clicked() {
+                ui.spacing_mut().item_spacing.x = 16.0;
+                if widgets::button(ui, Some(Icon::Download), "Actualizar todo", Kind::Primary, 44.0, available > 0).clicked() {
                     let ids: Vec<String> = self.queue.available().map(String::from).collect();
                     self.queue.enqueue(ids.iter().map(String::as_str));
                     self.selected.clear();
                 }
                 let idle = !self.scanning() && !self.queue.is_busy();
-                let b = Button::new(RichText::new("Buscar actualizaciones").strong()).min_size(Vec2::new(0.0, 44.0));
-                if ui.add_enabled(idle, b).clicked() {
+                if widgets::button(ui, Some(Icon::Refresh), "Buscar actualizaciones", Kind::Ghost, 44.0, idle).clicked() {
                     self.start_scan();
                 }
             });
@@ -197,54 +202,40 @@ impl UpdatesApp {
         ui.add_space(22.0);
 
         if self.queue.is_busy() {
-            let (done, total, pct) = self.queue.batch_progress();
-            Frame::new()
-                .fill(Color32::from_rgb(0x1A, 0x15, 0x10))
-                .stroke(Stroke::new(1.0, Color32::from_rgba_unmultiplied(0xFF, 0x8A, 0x2A, 77)))
-                .corner_radius(14)
-                .inner_margin(Margin::symmetric(18, 16))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.vertical(|ui| {
-                            ui.set_width(ui.available_width() - 100.0);
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new(format!("Actualizadas {done} de {total}")).size(14.0).strong());
-                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                    ui.label(RichText::new(format!("{}%", pct.round())).monospace().color(ACCENT_TEXT));
-                                });
-                            });
-                            progress_bar(ui, pct / 100.0, 6.0);
-                        });
-                        if ui.add(Button::new(RichText::new("Cancelar").size(13.0).strong()).min_size(Vec2::new(0.0, 36.0))).clicked() {
-                            self.queue.cancel();
-                        }
-                    });
-                });
+            self.batch_banner(ui);
             ui.add_space(22.0);
         }
 
         ui.horizontal(|ui| {
-            ui.add(
-                TextEdit::singleline(&mut self.query)
-                    .hint_text("Buscar app…")
-                    .desired_width(ui.available_width() - 420.0)
-                    .margin(Margin::symmetric(14, 11)),
-            );
-            Frame::new().fill(FIELD).corner_radius(12).inner_margin(4).show(ui, |ui| {
-                for (label, f) in [
-                    ("Todas", Filter::All),
-                    ("App Store", Filter::Only(Source::AppStore)),
-                    ("Homebrew", Filter::Only(Source::Homebrew)),
-                    ("Directas", Filter::Only(Source::Direct)),
-                ] {
-                    let on = self.filter == f;
-                    let b = Button::new(RichText::new(label).size(13.0).strong().color(if on { TEXT } else { FAINT }))
-                        .fill(if on { Color32::from_rgb(0x2A, 0x2D, 0x33) } else { Color32::TRANSPARENT })
-                        .min_size(Vec2::new(0.0, 34.0));
-                    if ui.add(b).clicked() {
-                        self.filter = f;
-                    }
-                }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                Frame::new()
+                    .fill(FIELD)
+                    .stroke(Stroke::new(1.0, Color32::from_white_alpha(20)))
+                    .corner_radius(12)
+                    .inner_margin(4)
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        ui.horizontal(|ui| {
+                            for (label, f) in [
+                                ("Todas", Filter::All),
+                                ("App Store", Filter::Only(Source::AppStore)),
+                                ("Homebrew", Filter::Only(Source::Homebrew)),
+                                ("Directas", Filter::Only(Source::Direct)),
+                            ] {
+                                if segment(ui, label, self.filter == f).clicked() {
+                                    self.filter = f;
+                                }
+                            }
+                        });
+                    });
+                let field = ui.add(
+                    TextEdit::singleline(&mut self.query)
+                        .hint_text("Buscar app…")
+                        .desired_width(ui.available_width())
+                        .margin(Margin { left: 40, right: 14, top: 12, bottom: 13 }),
+                );
+                let c = Pos2::new(field.rect.left() + 14.0 + 8.0, field.rect.center().y);
+                widgets::icon(ui, Rect::from_center_size(c, Vec2::splat(16.0)), Icon::Search, FAINT, 2.2);
             });
         });
         ui.add_space(22.0);
@@ -256,6 +247,7 @@ impl UpdatesApp {
             .filter(|a| self.queue.status(&a.id) == Status::Available)
             .map(|a| a.id.clone())
             .collect();
+        let mut to_update: Vec<String> = Vec::new();
         Frame::new()
             .fill(PANEL)
             .stroke(Stroke::new(1.0, LINE))
@@ -263,179 +255,182 @@ impl UpdatesApp {
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.set_height(ui.available_height());
-                let all_on = !visible_ids.is_empty() && visible_ids.iter().all(|id| self.selected.contains(id));
-                ui.allocate_ui(Vec2::new(ui.available_width(), 52.0), |ui| {
-                    ui.horizontal_centered(|ui| {
-                        ui.add_space(18.0);
-                        let mut on = all_on;
-                        if ui.checkbox(&mut on, "").changed() {
-                            for id in &visible_ids {
-                                if on { self.selected.insert(id.clone()); } else { self.selected.remove(id); }
-                            }
-                        }
-                        let sel_visible: Vec<&String> = visible_ids.iter().filter(|id| self.selected.contains(*id)).collect();
-                        let n = sel_visible.len();
-                        let label = match n {
-                            0 => "Seleccionar todas".to_string(),
-                            1 => "1 seleccionada".to_string(),
-                            n => format!("{n} seleccionadas"),
-                        };
-                        ui.label(RichText::new(label).size(13.0).strong().color(TEXT_2));
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            ui.add_space(18.0);
-                            let b = primary_button("Actualizar seleccionadas").min_size(Vec2::new(0.0, 34.0));
-                            if ui.add_enabled(n > 0, b).clicked() {
-                                let ids: Vec<String> = visible_ids.iter().filter(|id| self.selected.contains(*id)).cloned().collect();
-                                for id in &ids {
-                                    self.selected.remove(id);
-                                }
-                                self.queue.enqueue(ids.iter().map(String::as_str));
-                            }
-                        });
-                    });
+                ui.spacing_mut().item_spacing = Vec2::ZERO;
+                let selected_visible: Vec<&String> = visible_ids.iter().filter(|id| self.selected.contains(*id)).collect();
+                let n = selected_visible.len();
+                let all_on = !visible_ids.is_empty() && n == visible_ids.len();
+                let (head, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 52.0), Sense::hover());
+                ui.painter().hline(head.x_range(), head.bottom() - 0.5, Stroke::new(1.0, LINE));
+                let mut inner = ui.new_child(UiBuilder::new().max_rect(head.shrink2(Vec2::new(18.0, 0.0))).layout(Layout::left_to_right(Align::Center)));
+                let mut on = all_on;
+                if inner.add_enabled(!visible_ids.is_empty(), Checkbox::new(&mut on, "")).changed() {
+                    for id in &visible_ids {
+                        if on { self.selected.insert(id.clone()); } else { self.selected.remove(id); }
+                    }
+                }
+                let label = match n {
+                    0 => "Seleccionar todas".to_string(),
+                    1 => "1 seleccionada".to_string(),
+                    n => format!("{n} seleccionadas"),
+                };
+                inner.label(RichText::new(label).size(13.0).family(semibold()).color(TEXT_2));
+                inner.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if widgets::button(ui, None, "Actualizar seleccionadas", Kind::Primary, 34.0, n > 0).clicked() {
+                        to_update.extend(visible_ids.iter().filter(|id| self.selected.contains(*id)).cloned());
+                    }
                 });
-                ui.separator();
                 ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = 0.0;
                     if rows.is_empty() {
                         ui.add_space(64.0);
                         ui.vertical_centered(|ui| {
-                            ui.label(RichText::new("Ninguna app coincide con tu búsqueda.").color(FAINT));
+                            let msg = if self.scanning() { "Buscando…" } else if self.apps.is_empty() { "No hay actualizaciones." } else { "Ninguna app coincide con tu búsqueda." };
+                            ui.label(RichText::new(msg).color(FAINT));
                         });
                     }
                     for &i in &rows {
-                        let app = self.apps[i].clone();
-                        self.row(ui, &app);
+                        let app = &self.apps[i];
+                        let status = self.queue.status(&app.id);
+                        let mut sel = self.selected.contains(&app.id);
+                        let was = sel;
+                        let err = self.queue.error(&app.id);
+                        if row(ui, app, status, err, &mut sel) {
+                            to_update.push(app.id.clone());
+                        }
+                        if sel != was {
+                            if sel { self.selected.insert(app.id.clone()); } else { self.selected.remove(&app.id); }
+                        }
+                    }
+                });
+            });
+        if !to_update.is_empty() {
+            self.queue.enqueue(to_update.iter().map(String::as_str));
+            for id in &to_update {
+                self.selected.remove(id);
+            }
+        }
+    }
+
+    fn batch_banner(&mut self, ui: &mut Ui) {
+        let (done, total, pct) = self.queue.batch_progress();
+        Frame::new()
+            .fill(Color32::from_rgb(0x1A, 0x15, 0x10))
+            .stroke(Stroke::new(1.0, Color32::from_rgba_unmultiplied(0xFF, 0x8A, 0x2A, 77)))
+            .corner_radius(14)
+            .inner_margin(Margin::symmetric(18, 16))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 18.0;
+                    let (dot, _) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
+                    ui.painter().circle_filled(dot.center(), 5.0, ACCENT);
+                    ui.vertical(|ui| {
+                        ui.set_width(ui.available_width() - 110.0);
+                        ui.spacing_mut().item_spacing.y = 8.0;
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(format!("Actualizadas {done} de {total}")).size(14.0).family(semibold()));
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                ui.label(RichText::new(format!("{}%", pct.round())).monospace().color(ACCENT_TEXT));
+                            });
+                        });
+                        widgets::progress_bar(ui, pct / 100.0, 6.0);
+                    });
+                    if widgets::button(ui, None, "Cancelar", Kind::Soft, 36.0, true).clicked() {
+                        self.queue.cancel();
                     }
                 });
             });
     }
+}
 
-    fn row(&mut self, ui: &mut egui::Ui, app: &App) {
-        ui.allocate_ui(Vec2::new(ui.available_width(), 68.0), |ui| {
-            ui.horizontal_centered(|ui| {
-                ui.add_space(18.0);
-                let status = self.queue.status(&app.id);
-                let mut on = self.selected.contains(&app.id);
-                if ui.add_enabled(status == Status::Available, egui::Checkbox::new(&mut on, "")).changed() {
-                    if on { self.selected.insert(app.id.clone()); } else { self.selected.remove(&app.id); }
-                }
-                tile(ui, app);
-                ui.vertical(|ui| {
-                    ui.set_width(210.0);
-                    ui.label(RichText::new(&app.name).size(14.5).strong());
-                    ui.label(RichText::new(&app.vendor).size(12.5).color(FAINT));
-                });
-                ui.label(RichText::new(&app.from).monospace().size(13.0).color(FAINT));
-                ui.label(RichText::new("→").size(13.0).color(FAINT));
-                ui.label(RichText::new(&app.to).monospace().size(13.0).color(ACCENT_TEXT));
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.add_space(18.0);
-                    ui.allocate_ui(Vec2::new(150.0, 34.0), |ui| {
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| match status {
-                            Status::Available => {
-                                let b = Button::new(RichText::new("Actualizar").size(13.0).strong()).min_size(Vec2::new(0.0, 34.0));
-                                if ui.add(b).clicked() {
-                                    self.queue.enqueue([app.id.as_str()]);
-                                    self.selected.remove(&app.id);
-                                }
-                            }
-                            Status::Queued => {
-                                ui.label(RichText::new("En cola").size(13.0).color(FAINT));
-                            }
-                            Status::Updating(p) => {
-                                ui.vertical(|ui| {
-                                    ui.horizontal(|ui| {
-                                        let phase = if p < 70.0 { "Descargando" } else { "Instalando" };
-                                        ui.label(RichText::new(phase).size(12.0).color(TEXT_2));
-                                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                            ui.label(RichText::new(format!("{}%", p.round())).monospace().size(12.0).color(ACCENT_TEXT));
-                                        });
-                                    });
-                                    progress_bar(ui, p / 100.0, 5.0);
-                                });
-                            }
-                            Status::Failed => {
-                                let tip = self.queue.error(&app.id).unwrap_or("Error desconocido").to_string();
-                                let b = Button::new(RichText::new("Reintentar").size(13.0).strong().color(ERR)).min_size(Vec2::new(0.0, 34.0));
-                                if ui.add(b).on_hover_text(tip).clicked() {
-                                    self.queue.enqueue([app.id.as_str()]);
-                                }
-                            }
-                            Status::Done => {
-                                ui.label(RichText::new("✓ Actualizada").size(13.0).strong().color(OK));
-                            }
-                        });
+fn segment(ui: &mut Ui, label: &str, on: bool) -> egui::Response {
+    let color = if on { TEXT } else { FAINT };
+    let galley = ui.painter().layout_no_wrap(label.into(), FontId::new(13.0, semibold()), color);
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(galley.size().x + 28.0, 34.0), Sense::click());
+    if on {
+        ui.painter().rect_filled(rect, CornerRadius::same(8), Color32::from_rgb(0x2A, 0x2D, 0x33));
+    }
+    ui.painter().galley(Pos2::new(rect.left() + 14.0, rect.center().y - galley.size().y / 2.0), galley, color);
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// A child ui over the horizontal slice `x0..x1` of a row.
+fn cell(ui: &mut Ui, row: Rect, x0: f32, x1: f32, layout: Layout, add: impl FnOnce(&mut Ui)) {
+    let r = Rect::from_min_max(Pos2::new(x0, row.top()), Pos2::new(x1, row.bottom()));
+    let mut c = ui.new_child(UiBuilder::new().id_salt(x0.to_bits()).max_rect(r).layout(layout));
+    add(&mut c);
+}
+
+/// One 68px row. Returns true when its own "Actualizar"/"Reintentar" was clicked.
+fn row(ui: &mut Ui, app: &App, status: Status, error: Option<&str>, selected: &mut bool) -> bool {
+    // Per-app id scope: cells of different rows must not share widget ids.
+    ui.push_id(&app.id, |ui| row_inner(ui, app, status, error, selected)).inner
+}
+
+fn row_inner(ui: &mut Ui, app: &App, status: Status, error: Option<&str>, selected: &mut bool) -> bool {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 68.0), Sense::hover());
+    if resp.hovered() {
+        ui.painter().rect_filled(rect, 0, Color32::from_white_alpha(6));
+    }
+    ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, Color32::from_white_alpha(10)));
+    let (left, right) = (rect.left() + 18.0, rect.right() - 18.0);
+    let ltr = Layout::left_to_right(Align::Center);
+    let rtl = Layout::right_to_left(Align::Center);
+    let mut clicked = false;
+
+    cell(ui, rect, left, left + 18.0, ltr, |ui| {
+        ui.add_enabled(status == Status::Available, Checkbox::new(selected, ""));
+    });
+    cell(ui, rect, left + 32.0, left + 72.0, ltr, |ui| widgets::tile(ui, app));
+    cell(ui, rect, left + 86.0, left + 296.0, Layout::top_down(Align::Min), |ui| {
+        ui.add_space(15.0);
+        ui.spacing_mut().item_spacing.y = 3.0;
+        ui.add(egui::Label::new(RichText::new(&app.name).size(14.5).family(semibold())).truncate());
+        ui.add(egui::Label::new(RichText::new(&app.vendor).size(12.5).color(FAINT)).truncate());
+    });
+
+    let action_x = right - 150.0;
+    let size_x = action_x - 14.0 - 64.0;
+    let chip_x = size_x - 14.0 - 86.0;
+    cell(ui, rect, left + 310.0, chip_x - 14.0, ltr, |ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        ui.label(RichText::new(&app.from).monospace().size(13.0).color(FAINT));
+        let (r, _) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
+        widgets::icon(ui, r, Icon::Arrow, FAINT, 2.2);
+        ui.label(RichText::new(&app.to).monospace().size(13.0).color(ACCENT_TEXT));
+    });
+    cell(ui, rect, chip_x, chip_x + 86.0, ltr, |ui| widgets::chip(ui, app.source.label()));
+    cell(ui, rect, size_x, size_x + 64.0, rtl, |ui| {
+        ui.label(RichText::new(model::format_size(app.size_mb)).monospace().size(12.5).color(FAINT));
+    });
+    cell(ui, rect, action_x, right, rtl, |ui| match status {
+        Status::Available => clicked = widgets::button(ui, None, "Actualizar", Kind::Soft, 34.0, true).clicked(),
+        Status::Failed => {
+            let tip = error.unwrap_or("Error desconocido").to_string();
+            clicked = widgets::button(ui, None, "Reintentar", Kind::Soft, 34.0, true).on_hover_text(tip).clicked();
+        }
+        Status::Queued => {
+            ui.label(RichText::new("En cola").size(13.0).color(FAINT));
+            let (r, _) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
+            widgets::icon(ui, r, Icon::Clock, FAINT, 2.2);
+        }
+        Status::Updating(p) => {
+            ui.vertical(|ui| {
+                ui.set_width(150.0);
+                ui.spacing_mut().item_spacing.y = 6.0;
+                ui.horizontal(|ui| {
+                    let phase = if p < 70.0 { "Descargando" } else { "Instalando" };
+                    ui.label(RichText::new(phase).size(12.0).color(TEXT_2));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.label(RichText::new(format!("{}%", p.round())).monospace().size(12.0).color(ACCENT_TEXT));
                     });
-                    ui.add_space(8.0);
-                    ui.label(RichText::new(model::format_size(app.size_mb)).monospace().size(12.5).color(FAINT));
-                    ui.add_space(8.0);
-                    chip(ui, app.source.label());
                 });
+                widgets::progress_bar(ui, p / 100.0, 5.0);
             });
-        });
-        ui.painter().hline(ui.max_rect().x_range(), ui.cursor().top(), Stroke::new(1.0, Color32::from_white_alpha(10)));
-    }
-}
-
-
-fn primary_button(text: &str) -> Button<'static> {
-    Button::new(RichText::new(text).size(14.0).strong().color(ON_ACCENT))
-        .fill(ACCENT)
-        .min_size(Vec2::new(0.0, 44.0))
-}
-
-fn nav_item(ui: &mut egui::Ui, label: &str, active: bool, badge: Option<usize>) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 40.0), Sense::click());
-    if active {
-        ui.painter().rect_filled(rect, CornerRadius::same(10), Color32::from_rgba_unmultiplied(0xFF, 0x8A, 0x2A, 31));
-    }
-    let color = if active { ACCENT_TEXT } else { MUTED };
-    ui.painter().text(rect.left_center() + Vec2::new(12.0, 0.0), Align2::LEFT_CENTER, label, FontId::proportional(14.0), color);
-    if let Some(n) = badge {
-        let b = egui::Rect::from_center_size(rect.right_center() - Vec2::new(22.0, 0.0), Vec2::new(24.0, 22.0));
-        ui.painter().rect_filled(b, CornerRadius::same(11), ACCENT);
-        ui.painter().text(b.center(), Align2::CENTER_CENTER, n.to_string(), FontId::proportional(12.0), ON_ACCENT);
-    }
-}
-
-fn logo(ui: &mut egui::Ui, size: f32) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
-    let p = ui.painter();
-    p.rect_filled(rect, CornerRadius::same((size * 0.25) as u8), ACCENT);
-    let s = size / 32.0;
-    for (i, alpha) in [255u8, 158, 77].into_iter().enumerate() {
-        let y = 13.0 + 6.0 * i as f32;
-        let pts = [rect.min + Vec2::new(10.0, y) * s, rect.min + Vec2::new(16.0, y - 5.5) * s, rect.min + Vec2::new(22.0, y) * s];
-        let c = Color32::from_rgba_unmultiplied(0x1A, 0x0F, 0x05, alpha);
-        p.line_segment([pts[0], pts[1]], Stroke::new(3.0 * s, c));
-        p.line_segment([pts[1], pts[2]], Stroke::new(3.0 * s, c));
-    }
-}
-
-fn tile(ui: &mut egui::Ui, app: &App) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::splat(40.0), Sense::hover());
-    ui.painter().rect_filled(rect, CornerRadius::same(11), tile_color(app.hue));
-    ui.painter().text(
-        rect.center(),
-        Align2::CENTER_CENTER,
-        app.name.chars().next().unwrap_or('?'),
-        FontId::proportional(17.0),
-        Color32::WHITE,
-    );
-}
-
-fn chip(ui: &mut egui::Ui, text: &str) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(86.0, 26.0), Sense::hover());
-    ui.painter().rect_filled(rect, CornerRadius::same(7), Color32::from_white_alpha(13));
-    ui.painter().text(rect.center(), Align2::CENTER_CENTER, text, FontId::proportional(12.0), TEXT_2);
-}
-
-fn progress_bar(ui: &mut egui::Ui, frac: f32, h: f32) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), h), Sense::hover());
-    let r = CornerRadius::same((h / 2.0) as u8);
-    ui.painter().rect_filled(rect, r, Color32::from_white_alpha(20));
-    let mut fill = rect;
-    fill.set_width(rect.width() * frac.clamp(0.0, 1.0));
-    ui.painter().rect_filled(fill, r, ACCENT);
+        }
+        Status::Done => {
+            ui.label(RichText::new("Actualizada").size(13.0).family(semibold()).color(OK));
+            let (r, _) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::hover());
+            widgets::icon(ui, r, Icon::Check, OK, 2.6);
+        }
+    });
+    clicked
 }

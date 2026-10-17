@@ -1,0 +1,2 @@
+Geist, Geist Mono and Bricolage Grotesque are licensed under the SIL Open Font License 1.1 (https://openfontlicense.org).
+These files are static, Latin-only subsets generated from the Google Fonts variable builds (fonttools instancer + pyftsubset).
