@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::io::Read;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -12,6 +13,24 @@ use crate::{local, mas};
 use crate::model::{App, Source};
 
 const BREW_PATHS: [&str; 2] = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"];
+
+/// Bumped by `cancel_running`; a process started under an older value is killed.
+static CANCEL_GEN: AtomicU64 = AtomicU64::new(0);
+
+/// Kills every package manager process that is running right now.
+pub fn cancel_running() {
+    CANCEL_GEN.fetch_add(1, Ordering::SeqCst);
+}
+
+/// SIGTERM to the whole process group (brew spawns curl, ruby…), then the process itself.
+fn kill_tree(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    {
+        let _ = Command::new("/bin/kill").args(["-TERM", "--", &format!("-{}", child.id())]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
 
 /// Output cap per stream: a runaway brew must not eat memory.
 const MAX_OUTPUT: u64 = 4 * 1024 * 1024;
@@ -34,6 +53,9 @@ pub fn brew(args: &[&str], timeout: Duration, auto_update: bool) -> Result<Strin
 }
 
 pub fn run(mut cmd: Command, args: &[&str], timeout: Duration) -> Result<String, String> {
+    let generation = CANCEL_GEN.load(Ordering::SeqCst);
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
     cmd.args(args)
         // Never wait on a prompt (e.g. sudo): fail instead of hanging.
         .stdin(Stdio::null())
@@ -45,9 +67,12 @@ pub fn run(mut cmd: Command, args: &[&str], timeout: Duration) -> Result<String,
     let status = loop {
         match child.try_wait().map_err(|e| e.to_string())? {
             Some(st) => break st,
+            None if CANCEL_GEN.load(Ordering::SeqCst) != generation => {
+                kill_tree(&mut child);
+                return Err("Cancelado".into());
+            }
             None if Instant::now() >= deadline => {
-                let _ = child.kill();
-                let _ = child.wait();
+                kill_tree(&mut child);
                 return Err("El comando tardó demasiado y se canceló".into());
             }
             None => thread::sleep(Duration::from_millis(100)),
@@ -304,6 +329,17 @@ mod tests {
         assert!(merge(Some(Err("x".into())), Some(Err("y".into()))).is_err());
         assert_eq!(merge(None, Some(Ok(vec![]))).unwrap().1, None);
         assert!(merge(None, None).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancel_kills_a_running_command() {
+        let worker = thread::spawn(|| run(Command::new("/bin/sleep"), &["30"], Duration::from_secs(60)));
+        thread::sleep(Duration::from_millis(400));
+        let started = Instant::now();
+        cancel_running();
+        assert_eq!(worker.join().unwrap(), Err("Cancelado".to_string()));
+        assert!(started.elapsed() < Duration::from_secs(3));
     }
 
     #[test]

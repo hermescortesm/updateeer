@@ -787,6 +787,7 @@ impl UpdatesApp {
                     });
                     if widgets::button(ui, None, "Cancelar", Kind::Soft, 36.0, true).clicked() {
                         self.queue.cancel();
+                        scan::cancel_running();
                     }
                 });
             });
