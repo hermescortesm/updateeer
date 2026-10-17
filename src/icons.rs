@@ -59,7 +59,7 @@ fn local_icon(app: &App) -> Option<Icon> {
 }
 
 /// The icon file named by the bundle's Info.plist (a folder of `.icns` may hold file-type icons too).
-fn icns_of(bundle: &Path) -> Option<PathBuf> {
+pub fn icns_of(bundle: &Path) -> Option<PathBuf> {
     let res = bundle.join("Contents/Resources");
     let out = Command::new("/usr/bin/plutil")
         .args(["-extract", "CFBundleIconFile", "raw", "-o", "-"])

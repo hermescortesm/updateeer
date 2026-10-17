@@ -6,7 +6,7 @@ use crate::scan;
 /// Official Homebrew installer. It asks for the admin password, so it runs in a visible Terminal.
 const HOMEBREW_INSTALL: &str = r#"/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)""#;
 
-fn applescript_string(s: &str) -> String {
+pub fn applescript_string(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 

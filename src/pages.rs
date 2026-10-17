@@ -7,6 +7,7 @@ use eframe::egui::{self, Align, Frame, Layout, RichText, ScrollArea, Sense, Stro
 use std::time::SystemTime;
 
 use crate::model::{self, App};
+use crate::notify;
 use crate::scan;
 use crate::settings::{HOURS, ThemeMode};
 use crate::theme::*;
@@ -278,6 +279,11 @@ impl UpdatesApp {
             setting_row(ui, "Búsqueda automática", "Busca actualizaciones sola mientras la app esté abierta.", |ui| {
                 widgets::toggle(ui, &mut self.settings.auto);
             });
+            if notify::supported() {
+                setting_row(ui, "Actualizar solas las apps cerradas", "Las que estén abiertas te avisan con una notificación: actualizar ahora o más tarde.", |ui| {
+                    widgets::toggle(ui, &mut self.settings.auto_update);
+                });
+            }
             setting_row(ui, "Frecuencia", "Cada cuánto se repite la búsqueda.", |ui| {
                 Frame::new()
                     .fill(field())
