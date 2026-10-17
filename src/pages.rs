@@ -8,8 +8,9 @@ use crate::model::App;
 use crate::scan;
 use crate::settings::HOURS;
 use crate::theme::*;
-use crate::ui::{UpdatesApp, cell, search_field, segment};
-use crate::widgets::{self, Icon};
+use crate::queue::Status;
+use crate::ui::{Page, UpdatesApp, cell, search_field, segment};
+use crate::widgets::{self, Icon, Kind};
 
 fn header(ui: &mut Ui, title: &str, subtitle: &str) {
     ui.vertical(|ui| {
@@ -93,6 +94,7 @@ impl UpdatesApp {
         header(ui, "Instaladas", &sub);
         ui.horizontal(|ui| ui.with_layout(Layout::right_to_left(Align::Center), |ui| search_field(ui, &mut self.query)));
         ui.add_space(22.0);
+        let mut open: Option<App> = None;
         card(ui, |ui| {
             ui.set_height(ui.available_height());
             if rows.is_empty() {
@@ -111,12 +113,102 @@ impl UpdatesApp {
                     let app = &self.installed[i];
                     ui.push_id(&app.id, |ui| {
                         let (rect, left, right) = list_row(ui);
+                        if ui.interact(rect, ui.make_persistent_id("open"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                            open = Some(app.clone());
+                        }
                         name_cell(ui, rect, left, app);
                         cell(ui, rect, left + 290.0, right - 100.0, Layout::left_to_right(Align::Center), |ui| {
-                            ui.label(RichText::new(&app.from).monospace().size(13.0).color(TEXT_2));
+                            ui.label(RichText::new(widgets::short_version(&app.from, 40)).monospace().size(13.0).color(TEXT_2));
                         });
                         cell(ui, rect, right - 86.0, right, Layout::left_to_right(Align::Center), |ui| widgets::chip(ui, app.source.label()));
                     });
+                }
+            });
+        });
+        if let Some(app) = open {
+            self.open_detail(app, Page::Installed);
+        }
+    }
+
+    pub(crate) fn open_detail(&mut self, app: App, from: Page) {
+        self.detail = Some(app);
+        self.back = from;
+        self.page = Page::Detail;
+    }
+
+    pub(crate) fn detail_page(&mut self, ui: &mut Ui) {
+        let Some(app) = self.detail.clone() else {
+            self.page = self.back;
+            return;
+        };
+        if widgets::button(ui, None, "Volver", Kind::Ghost, 34.0, true).clicked() {
+            self.page = self.back;
+            return;
+        }
+        ui.add_space(22.0);
+        let is_update = !app.to.is_empty();
+        let status = self.queue.status(&app.id);
+        // Same rule as the list: no actions while a scan is about to replace the queue.
+        let can_update = is_update && matches!(status, Status::Available | Status::Failed) && !self.scanning();
+        ui.horizontal(|ui| {
+            widgets::tile_sized(ui, &app, 64.0);
+            ui.add_space(8.0);
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 6.0;
+                ui.label(RichText::new(&app.name).size(36.0).family(display()));
+                ui.label(RichText::new(&app.vendor).size(14.0).color(MUTED));
+            });
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let label = if status == Status::Failed { "Reintentar" } else { "Actualizar" };
+                if can_update && widgets::button(ui, Some(Icon::Download), label, Kind::Primary, 44.0, true).clicked() {
+                    self.queue.enqueue([app.id.as_str()]);
+                }
+            });
+        });
+        ui.add_space(22.0);
+
+        let (kind, token) = app.id.split_once(':').unwrap_or(("", &app.id));
+        let kind_label = match kind {
+            "cask" => "app (cask)",
+            "formula" => "fórmula",
+            _ => "paquete",
+        };
+        let state = if !is_update {
+            "Instalada".to_string()
+        } else {
+            match status {
+                Status::Available => "Actualización disponible".into(),
+                Status::Queued => "En cola".into(),
+                Status::Updating(p) => format!("Actualizando {}%", p.round()),
+                Status::Done => "Actualizada".into(),
+                Status::Failed => "Falló".into(),
+            }
+        };
+        let command = match kind {
+            "cask" => format!("brew upgrade --cask {token}"),
+            "formula" => format!("brew upgrade --formula {token}"),
+            _ => String::new(),
+        };
+        let mut rows: Vec<(&str, String)> = vec![
+            ("Origen", format!("{} · {kind_label}", app.source.label())),
+            ("Estado", state),
+            ("Versión instalada", app.from.clone()),
+        ];
+        if is_update {
+            rows.push(("Versión nueva", app.to.clone()));
+            rows.push(("Tamaño de descarga", crate::model::format_size(app.size_mb)));
+        }
+        rows.push(("Paquete", token.to_string()));
+        if is_update && !command.is_empty() {
+            rows.push(("Comando", command));
+        }
+        if let Some(e) = self.queue.error(&app.id) {
+            rows.push(("Último error", e.to_string()));
+        }
+        card(ui, |ui| {
+            ScrollArea::vertical().auto_shrink(true).show(ui, |ui| {
+                for (title, value) in &rows {
+                    value_row(ui, title, value);
                 }
             });
         });
@@ -198,6 +290,20 @@ impl UpdatesApp {
             self.settings.save();
         }
     }
+}
+
+/// A label on the left, a (possibly long) monospace value on the right; the full value shows on hover.
+fn value_row(ui: &mut Ui, title: &str, value: &str) {
+    ui.push_id(title, |ui| {
+        let (rect, left, right) = list_row(ui);
+        let ltr = Layout::left_to_right(Align::Center);
+        cell(ui, rect, left, left + 200.0, ltr, |ui| {
+            ui.label(RichText::new(title).size(14.0).family(semibold()).color(TEXT_2));
+        });
+        cell(ui, rect, left + 220.0, right, Layout::right_to_left(Align::Center), |ui| {
+            ui.add(egui::Label::new(RichText::new(value).monospace().size(13.0).color(TEXT)).truncate()).on_hover_text(value);
+        });
+    });
 }
 
 /// Title and description on the left, control on the right.
