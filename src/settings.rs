@@ -48,6 +48,9 @@ impl Default for Settings {
 }
 
 pub fn config_dir() -> Option<PathBuf> {
+    if cfg!(windows) {
+        return std::env::var_os("APPDATA").map(|d| PathBuf::from(d).join("Updateeer"));
+    }
     std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config/updateeer"))
 }
 

@@ -65,6 +65,15 @@ enum Sort {
     Oldest,
 }
 
+/// Source chips for this OS (the row is laid out right to left).
+fn source_filters() -> Vec<(&'static str, Filter)> {
+    if cfg!(windows) {
+        vec![("Todas", Filter::All), ("winget", Filter::Only(Source::Winget)), ("Scoop", Filter::Only(Source::Scoop)), ("Chocolatey", Filter::Only(Source::Chocolatey))]
+    } else {
+        vec![("Todas", Filter::All), ("App Store", Filter::Only(Source::AppStore)), ("Homebrew", Filter::Only(Source::Homebrew)), ("Directas", Filter::Only(Source::Direct))]
+    }
+}
+
 fn detect_tools() -> (bool, bool) {
     (scan::brew_path().is_some(), mas::path().is_some())
 }
@@ -568,12 +577,7 @@ impl UpdatesApp {
                     .show(ui, |ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;
                         ui.horizontal(|ui| {
-                            for (label, f) in [
-                                ("Todas", Filter::All),
-                                ("App Store", Filter::Only(Source::AppStore)),
-                                ("Homebrew", Filter::Only(Source::Homebrew)),
-                                ("Directas", Filter::Only(Source::Direct)),
-                            ] {
+                            for (label, f) in source_filters() {
                                 if segment(ui, label, self.filter == f).clicked() {
                                     self.filter = f;
                                 }

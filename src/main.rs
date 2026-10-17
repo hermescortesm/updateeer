@@ -1,3 +1,5 @@
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod autostart;
 mod history;
 mod icons;
@@ -17,6 +19,7 @@ mod theme;
 mod tray;
 mod ui;
 mod upgrade;
+mod winpkg;
 mod widgets;
 
 /// The Dock / window icon, drawn by `tools/gen_icon.py`.

@@ -1,0 +1,46 @@
+name: Windows
+
+on:
+  push:
+    branches: [dev]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  msi:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test
+        run: cargo test --release --locked
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Build the .msi
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.*)"').Matches[0].Groups[1].Value
+          dotnet tool install --global wix --version 5.0.2
+          New-Item -ItemType Directory -Force dist | Out-Null
+          wix build packaging/windows/main.wxs -arch x64 -d Version=$version -o "dist/Updateeer-$version-windows-x64.msi"
+          Get-FileHash dist/*.msi -Algorithm SHA256 | Format-List
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-msi
+          path: dist/*.msi
+
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view $env:GITHUB_REF_NAME 2>$null
+          if ($LASTEXITCODE -ne 0) { gh release create $env:GITHUB_REF_NAME --title "Updateeer $env:GITHUB_REF_NAME" --notes "See the assets below." }
+          gh release upload $env:GITHUB_REF_NAME (Get-ChildItem dist/*.msi).FullName --clobber
