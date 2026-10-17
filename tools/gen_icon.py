@@ -24,3 +24,17 @@ for y, alpha in ((13, 255), (19, 158), (25, 77)):
 img = img.resize((SIZE, SIZE), Image.LANCZOS)
 img.quantize(colors=64, method=Image.Quantize.FASTOCTREE).save(OUT, "PNG", optimize=True)
 print(OUT, OUT.stat().st_size, "bytes")
+
+# Menu bar glyph: black chevrons on transparent, used as a macOS template image (22pt @2x).
+T, TS = 44, 4
+glyph = Image.new("RGBA", (T * TS, T * TS), (0, 0, 0, 0))
+d = ImageDraw.Draw(glyph)
+for y, alpha in ((13, 255), (19, 170), (25, 95)):
+    pts = [((x - 10) * 2 * TS + 10 * TS, ((yy - 6) * 2 + 2) * TS) for x, yy in ((10, y), (16, y - 5.5), (22, y))]
+    d.line(pts, fill=(0, 0, 0, alpha), width=int(5 * TS), joint="curve")
+    for p in (pts[0], pts[2]):
+        r = 2.5 * TS
+        d.ellipse((p[0] - r, p[1] - r, p[0] + r, p[1] + r), fill=(0, 0, 0, alpha))
+tray = OUT.parent / "tray.png"
+glyph.resize((T, T), Image.LANCZOS).save(tray, "PNG", optimize=True)
+print(tray, tray.stat().st_size, "bytes")

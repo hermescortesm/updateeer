@@ -273,6 +273,7 @@ impl UpdatesApp {
     pub(crate) fn settings_page(&mut self, ui: &mut Ui) {
         header(ui, "Ajustes", "Cómo busca Updateeer");
         let before = self.settings;
+        let mut want_login = None;
         card(ui, |ui| {
             setting_row(ui, "Búsqueda automática", "Busca actualizaciones sola mientras la app esté abierta.", |ui| {
                 widgets::toggle(ui, &mut self.settings.auto);
@@ -294,6 +295,15 @@ impl UpdatesApp {
                         });
                     });
             });
+            if crate::autostart::supported() {
+                let desc = self.login_error.clone().unwrap_or_else(|| "Se abre en la barra de menú al encender el equipo.".into());
+                let mut on = self.login;
+                setting_row(ui, "Abrir al iniciar sesión", &desc, |ui| {
+                    if widgets::toggle(ui, &mut on).changed() {
+                        want_login = Some(on);
+                    }
+                });
+            }
             setting_row(ui, "Apariencia", "Claro, oscuro o el del sistema.", |ui| {
                 Frame::new().fill(field()).stroke(Stroke::new(1.0, tint(20))).corner_radius(12).inner_margin(4).show(ui, |ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
@@ -313,6 +323,9 @@ impl UpdatesApp {
                 ui.label(RichText::new(scan::brew_path().unwrap_or("no instalado")).monospace().size(13.0).color(text_2()));
             });
         });
+        if let Some(on) = want_login {
+            self.set_login(on);
+        }
         if self.settings != before {
             self.settings.save();
         }
