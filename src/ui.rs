@@ -37,7 +37,7 @@ pub struct Entry {
     pub error: Option<String>,
 }
 
-type Scan = Receiver<Result<Vec<App>, String>>;
+type Scan = Receiver<Result<scan::Found, String>>;
 
 pub struct UpdatesApp {
     apps: Vec<App>,
@@ -48,6 +48,7 @@ pub struct UpdatesApp {
     pub(crate) ctx: egui::Context,
     scan_rx: Option<Scan>,
     scan_error: Option<String>,
+    scan_warning: Option<String>,
     done_tx: Sender<(String, Result<(), String>)>,
     done_rx: Receiver<(String, Result<(), String>)>,
     last_scan: Instant,
@@ -76,6 +77,7 @@ impl UpdatesApp {
             ctx,
             scan_rx: None,
             scan_error: None,
+            scan_warning: None,
             done_tx,
             done_rx,
             last_scan: Instant::now(),
@@ -110,6 +112,7 @@ impl UpdatesApp {
         });
         self.scan_rx = Some(rx);
         self.scan_error = None;
+        self.scan_warning = None;
     }
 
     fn poll_scan(&mut self) {
@@ -117,7 +120,8 @@ impl UpdatesApp {
         let Ok(result) = rx.try_recv() else { return };
         self.scan_rx = None;
         match result {
-            Ok(apps) => {
+            Ok((apps, warning)) => {
+                self.scan_warning = warning;
                 self.queue = Queue::new(apps.iter().map(|a| a.id.clone()), CONCURRENCY);
                 self.apps = apps;
                 self.selected.clear();
@@ -242,7 +246,7 @@ impl UpdatesApp {
             .filter(|a| self.queue.status(&a.id) == Status::Available)
             .filter_map(|a| a.size_mb)
             .sum();
-        let summary = if self.scanning() {
+        let mut summary = if self.scanning() {
             "Buscando actualizaciones…".to_string()
         } else if let Some(e) = &self.scan_error {
             format!("No se pudo buscar: {e}")
@@ -256,6 +260,9 @@ impl UpdatesApp {
         } else {
             "Todo al día".to_string()
         };
+        if let (Some(w), false) = (&self.scan_warning, self.scanning()) {
+            summary = format!("{summary} · {w}");
+        }
         // No actions while a scan runs: its result replaces the queue.
         let can_act = !self.scanning();
 

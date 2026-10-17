@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
+use crate::mas;
 use crate::model::{App, Source};
 
 const BREW_PATHS: [&str; 2] = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"];
@@ -25,15 +26,19 @@ pub fn brew_path() -> Option<&'static str> {
 pub fn brew(args: &[&str], timeout: Duration, auto_update: bool) -> Result<String, String> {
     let bin = brew_path().ok_or("Homebrew no está instalado")?;
     let mut cmd = Command::new(bin);
+    cmd.env("HOMEBREW_NO_ENV_HINTS", "1");
+    if !auto_update {
+        cmd.env("HOMEBREW_NO_AUTO_UPDATE", "1").env("HOMEBREW_NO_INSTALL_CLEANUP", "1");
+    }
+    run(cmd, args, timeout)
+}
+
+pub fn run(mut cmd: Command, args: &[&str], timeout: Duration) -> Result<String, String> {
     cmd.args(args)
-        .env("HOMEBREW_NO_ENV_HINTS", "1")
         // Never wait on a prompt (e.g. sudo): fail instead of hanging.
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    if !auto_update {
-        cmd.env("HOMEBREW_NO_AUTO_UPDATE", "1").env("HOMEBREW_NO_INSTALL_CLEANUP", "1");
-    }
     let mut child = cmd.spawn().map_err(|e| e.to_string())?;
     let (out_h, err_h) = (capture(child.stdout.take()), capture(child.stderr.take()));
     let deadline = Instant::now() + timeout;
@@ -43,7 +48,7 @@ pub fn brew(args: &[&str], timeout: Duration, auto_update: bool) -> Result<Strin
             None if Instant::now() >= deadline => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err("Homebrew tardó demasiado y se canceló".into());
+                return Err("El comando tardó demasiado y se canceló".into());
             }
             None => thread::sleep(Duration::from_millis(100)),
         }
@@ -70,14 +75,47 @@ fn capture(stream: Option<impl Read + Send + 'static>) -> thread::JoinHandle<Vec
 }
 
 /// Last few lines of an error, so a tooltip never shows pages of brew output.
-fn tail(s: &str) -> String {
+pub fn tail(s: &str) -> String {
     let lines: Vec<&str> = s.trim().lines().collect();
     let t = lines[lines.len().saturating_sub(5)..].join("\n");
     let skip = t.chars().count().saturating_sub(400);
     t.chars().skip(skip).collect()
 }
 
-pub fn scan() -> Result<Vec<App>, String> {
+/// Apps found plus a non-fatal warning (one source failed while another worked).
+pub type Found = (Vec<App>, Option<String>);
+
+/// Homebrew and App Store together. Fails only when no source worked.
+pub fn scan() -> Result<Found, String> {
+    let brew_result = brew_path().map(|_| scan_brew());
+    let mas_result = mas::path().map(|_| mas::outdated());
+    merge(brew_result, mas_result)
+}
+
+/// A source that is not installed (`None`) is skipped; one that fails only warns if another worked.
+fn merge(brew: Option<Result<Vec<App>, String>>, mas: Option<Result<Vec<App>, String>>) -> Result<Found, String> {
+    let mut apps = Vec::new();
+    let mut errors = Vec::new();
+    let mut worked = false;
+    for (name, r) in [("Homebrew", brew), ("App Store", mas)] {
+        match r {
+            Some(Ok(a)) => {
+                worked = true;
+                apps.extend(a);
+            }
+            Some(Err(e)) => errors.push((name, e)),
+            None => {}
+        }
+    }
+    let text = errors.iter().map(|(n, e)| format!("{n}: {e}")).collect::<Vec<_>>().join(" · ");
+    if !worked {
+        return Err(if text.is_empty() { "No hay Homebrew ni mas instalados".into() } else { text });
+    }
+    apps.sort_by_key(|a| a.name.to_lowercase());
+    Ok((apps, (!text.is_empty()).then_some(text)))
+}
+
+fn scan_brew() -> Result<Vec<App>, String> {
     let outdated = brew(&["outdated", "--greedy", "--json=v2"], SCAN_TIMEOUT, true)?;
     let leaves = brew(&["leaves"], SCAN_TIMEOUT, true)?;
     let leaves: HashSet<&str> = leaves.lines().collect();
@@ -94,7 +132,13 @@ pub fn scan() -> Result<Vec<App>, String> {
 }
 
 /// Everything installed through Homebrew: casks plus the formulae the user asked for.
-pub fn installed() -> Result<Vec<App>, String> {
+pub fn installed() -> Result<Found, String> {
+    let brew_result = brew_path().map(|_| installed_brew());
+    let mas_result = mas::path().map(|_| mas::installed());
+    merge(brew_result, mas_result)
+}
+
+fn installed_brew() -> Result<Vec<App>, String> {
     let leaves = brew(&["leaves"], SCAN_TIMEOUT, false)?;
     // `leaves` may print `user/tap/name`; `list` prints the short name.
     let leaves: HashSet<&str> = leaves.lines().map(|l| l.rsplit('/').next().unwrap_or(l)).collect();
@@ -147,7 +191,7 @@ pub fn safe_token(t: &str) -> bool {
 }
 
 /// Text from brew that ends up on screen: no control characters, bounded length.
-fn clean(s: &str) -> String {
+pub fn clean(s: &str) -> String {
     s.chars().filter(|c| !c.is_control()).take(80).collect()
 }
 
@@ -160,7 +204,7 @@ fn first_version(v: &Value) -> String {
     }
 }
 
-fn hue(name: &str) -> f32 {
+pub fn hue(name: &str) -> f32 {
     (name.bytes().fold(7u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32)) % 360) as f32
 }
 
@@ -236,6 +280,16 @@ mod tests {
     }
 
     #[test]
+    fn merge_skips_missing_and_warns_on_partial_failure() {
+        let a = |n: &str| app(format!("cask:{n}"), n, "x", "1".into(), "2".into());
+        let (apps, warn) = merge(Some(Ok(vec![a("b")])), Some(Err("sin sesión".into()))).unwrap();
+        assert_eq!((apps.len(), warn.as_deref()), (1, Some("App Store: sin sesión")));
+        assert!(merge(Some(Err("x".into())), Some(Err("y".into()))).is_err());
+        assert_eq!(merge(None, Some(Ok(vec![]))).unwrap().1, None);
+        assert!(merge(None, None).is_err());
+    }
+
+    #[test]
     fn token_rules() {
         assert!(safe_token("node@22"));
         assert!(safe_token("user/tap/engram"));
@@ -266,7 +320,7 @@ mod tests {
     #[test]
     #[ignore]
     fn live() {
-        for a in scan().unwrap() {
+        for a in scan().unwrap().0 {
             println!("{:<28} {:<24} {} -> {}", a.name, a.vendor, a.from, a.to);
         }
     }
@@ -274,7 +328,7 @@ mod tests {
     #[test]
     #[ignore]
     fn live_installed() {
-        let apps = installed().unwrap();
+        let apps = installed().unwrap().0;
         println!("{} installed", apps.len());
         for a in apps.iter().take(15) {
             println!("{:<28} {:<24} {}", a.name, a.vendor, a.from);

@@ -72,7 +72,7 @@ impl UpdatesApp {
         let Ok(result) = rx.try_recv() else { return };
         self.installed_rx = None;
         match result {
-            Ok(apps) => self.installed = apps,
+            Ok((apps, _)) => self.installed = apps,
             Err(e) => self.installed_error = Some(e),
         }
     }
@@ -170,6 +170,7 @@ impl UpdatesApp {
         let (kind, token) = app.id.split_once(':').unwrap_or(("", &app.id));
         let kind_label = match kind {
             "cask" => "app (cask)",
+            "mas" => "app de la tienda",
             "formula" => "fórmula",
             _ => "paquete",
         };
@@ -187,6 +188,7 @@ impl UpdatesApp {
         let command = match kind {
             "cask" => format!("brew upgrade --cask {token}"),
             "formula" => format!("brew upgrade --formula {token}"),
+            "mas" => format!("mas upgrade {token}"),
             _ => String::new(),
         };
         let mut rows: Vec<(&str, String)> = vec![
