@@ -17,8 +17,12 @@ impl Default for Settings {
     }
 }
 
+pub fn config_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config/updateeer"))
+}
+
 fn path() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config/updateeer/settings.json"))
+    config_dir().map(|d| d.join("settings.json"))
 }
 
 impl Settings {
