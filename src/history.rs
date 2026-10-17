@@ -34,7 +34,7 @@ fn parse(text: &str) -> Vec<Entry> {
             if id.is_empty() || name.is_empty() {
                 return None;
             }
-            let source = if id.starts_with("mas:") { Source::AppStore } else { Source::Homebrew };
+            let source = Source::from_id(&id);
             let app = App {
                 hue: scan::hue(&name),
                 vendor: text(e, "vendor"),

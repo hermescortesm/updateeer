@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Attempts per app before it is marked failed.
 const MAX_ATTEMPTS: u8 = 2;
@@ -23,6 +23,8 @@ pub struct Queue {
     batch: Vec<String>,
     attempts: HashMap<String, u8>,
     errors: HashMap<String, String>,
+    /// Running when cancelled: their process is being killed and its result must not count.
+    cancelled: HashSet<String>,
     concurrency: usize,
 }
 
@@ -33,6 +35,7 @@ impl Queue {
             batch: Vec::new(),
             attempts: HashMap::new(),
             errors: HashMap::new(),
+            cancelled: HashSet::new(),
             concurrency,
         }
     }
@@ -81,11 +84,17 @@ impl Queue {
         }
     }
 
-    /// Un-queues what has not started. Running updates cannot be interrupted safely.
+    /// Drops everything not finished. The caller must also kill the running processes
+    /// (`scan::cancel_running`); their late results are ignored.
     pub fn cancel(&mut self) {
-        for s in self.status.values_mut() {
-            if *s == Status::Queued {
-                *s = Status::Available;
+        for (id, s) in self.status.iter_mut() {
+            match *s {
+                Status::Queued => *s = Status::Available,
+                Status::Updating(_) => {
+                    *s = Status::Available;
+                    self.cancelled.insert(id.clone());
+                }
+                _ => {}
             }
         }
         let status = &self.status;
@@ -124,6 +133,13 @@ impl Queue {
     /// Records the outcome of a started update. A failure is retried until attempts run out.
     pub fn finish(&mut self, id: &str, result: Result<(), String>) {
         let Some(s) = self.status.get_mut(id) else { return };
+        if self.cancelled.remove(id) {
+            // Killed before it ended: back to Available. If it still managed to finish, say so.
+            if result.is_ok() {
+                *s = Status::Done;
+            }
+            return;
+        }
         match result {
             Ok(()) => *s = Status::Done,
             Err(e) => {
@@ -199,14 +215,21 @@ mod tests {
     }
 
     #[test]
-    fn cancel_only_drops_queued() {
+    fn cancel_stops_running_and_queued() {
         let mut q = q();
         q.enqueue(["a", "b", "c"]);
-        q.start_ready(); // a, b running
+        q.start_ready(); // a, b running, c queued
         q.cancel();
-        assert_eq!(q.status("a"), Status::Updating(0.0));
-        assert_eq!(q.status("c"), Status::Available);
-        assert_eq!(q.batch_progress().1, 2);
+        assert!(["a", "b", "c"].iter().all(|id| q.status(id) == Status::Available));
+        assert!(!q.is_busy());
+        // The killed processes report back: no retry, no failure.
+        q.finish("a", Err("Cancelado".into()));
+        assert_eq!(q.status("a"), Status::Available);
+        assert_eq!(q.failed_count(), 0);
+        assert!(q.start_ready().is_empty());
+        // One that finished anyway counts as done.
+        q.finish("b", Ok(()));
+        assert_eq!(q.status("b"), Status::Done);
     }
 
     #[test]

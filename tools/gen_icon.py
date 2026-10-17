@@ -38,3 +38,8 @@ for y, alpha in ((13, 255), (19, 170), (25, 95)):
 tray = OUT.parent / "tray.png"
 glyph.resize((T, T), Image.LANCZOS).save(tray, "PNG", optimize=True)
 print(tray, tray.stat().st_size, "bytes")
+
+# Windows .ico (exe and installer): same artwork at the usual sizes.
+ico = OUT.parent / "icon.ico"
+Image.open(OUT).convert("RGBA").save(ico, format="ICO", sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
+print(ico, ico.stat().st_size, "bytes")

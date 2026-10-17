@@ -5,14 +5,32 @@ pub enum Source {
     AppStore,
     Homebrew,
     Direct,
+    Winget,
+    Scoop,
+    Chocolatey,
 }
 
 impl Source {
+    /// Source implied by an app id prefix (`mas:`, `winget:`…); Homebrew otherwise.
+    pub fn from_id(id: &str) -> Self {
+        match id.split_once(':').map_or("", |(k, _)| k) {
+            "mas" => Source::AppStore,
+            "direct" => Source::Direct,
+            "winget" => Source::Winget,
+            "scoop" => Source::Scoop,
+            "choco" => Source::Chocolatey,
+            _ => Source::Homebrew,
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Source::AppStore => "App Store",
             Source::Homebrew => "Homebrew",
             Source::Direct => "Directa",
+            Source::Winget => "winget",
+            Source::Scoop => "Scoop",
+            Source::Chocolatey => "Chocolatey",
         }
     }
 }

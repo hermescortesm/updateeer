@@ -12,11 +12,14 @@ use crate::model::{self, App, Source};
 use crate::queue::{Queue, Status};
 use crate::history::{self, Entry};
 use crate::native;
+use crate::notify::{Notifier, Reply};
+use crate::running::{self, State};
+use crate::setup;
 use crate::tray::{self, Tray};
 use crate::autostart;
 use crate::icons;
 use crate::settings::{Settings, ThemeMode};
-use crate::{scan, upgrade};
+use crate::{mas, scan, upgrade};
 use crate::theme::{self, *};
 use crate::widgets::{self, Icon, Kind};
 
@@ -62,6 +65,19 @@ enum Sort {
     Oldest,
 }
 
+/// Source chips for this OS (the row is laid out right to left).
+fn source_filters() -> Vec<(&'static str, Filter)> {
+    if cfg!(windows) {
+        vec![("Todas", Filter::All), ("winget", Filter::Only(Source::Winget)), ("Scoop", Filter::Only(Source::Scoop)), ("Chocolatey", Filter::Only(Source::Chocolatey))]
+    } else {
+        vec![("Todas", Filter::All), ("App Store", Filter::Only(Source::AppStore)), ("Homebrew", Filter::Only(Source::Homebrew)), ("Directas", Filter::Only(Source::Direct))]
+    }
+}
+
+fn detect_tools() -> (bool, bool) {
+    (scan::brew_path().is_some(), mas::path().is_some())
+}
+
 type IconMsg = (String, Option<icons::Icon>);
 
 pub struct UpdatesApp {
@@ -93,6 +109,18 @@ pub struct UpdatesApp {
     pub(crate) history: Vec<Entry>,
     tray: Option<Tray>,
     quitting: bool,
+    notifier: Notifier,
+    notify_rx: Receiver<Reply>,
+    /// Apps we already asked about (or were told "later" for): no new question before this time.
+    snooze: HashMap<String, Instant>,
+    /// "Update now" answers that arrived while a scan was replacing the queue.
+    update_after_scan: Vec<String>,
+    last_auto: Instant,
+    /// (Homebrew found, mas found).
+    tools: (bool, bool),
+    mas_install: Option<Receiver<Result<(), String>>>,
+    setup_error: Option<String>,
+    was_focused: bool,
     /// Frames left before hiding the window (started with `--background`).
     hide_in: Option<u8>,
     pub(crate) login: bool,
@@ -107,6 +135,7 @@ impl UpdatesApp {
     pub fn new(ctx: egui::Context, start_hidden: bool) -> Self {
         let (done_tx, done_rx) = mpsc::channel();
         let (icon_tx, icon_rx) = mpsc::channel();
+        let (notifier, notify_rx) = Notifier::new(&ctx);
         let mut app = Self {
             apps: Vec::new(),
             selected: HashSet::new(),
@@ -136,6 +165,15 @@ impl UpdatesApp {
             history: history::load(),
             tray: None,
             quitting: false,
+            notifier,
+            notify_rx,
+            snooze: HashMap::new(),
+            update_after_scan: Vec::new(),
+            last_auto: Instant::now(),
+            tools: detect_tools(),
+            mas_install: None,
+            setup_error: None,
+            was_focused: true,
             hide_in: start_hidden.then_some(3),
             login: autostart::enabled(),
             login_error: None,
@@ -157,6 +195,7 @@ impl UpdatesApp {
         if self.scanning() || self.queue.is_busy() {
             return;
         }
+        self.tools = detect_tools();
         self.last_scan = Instant::now();
         let (tx, rx) = mpsc::channel();
         let ctx = self.ctx.clone();
@@ -167,6 +206,58 @@ impl UpdatesApp {
         self.scan_rx = Some(rx);
         self.scan_error = None;
         self.scan_warning = None;
+    }
+
+    /// Auto-update: apps that are not running update on their own, open ones get a notification
+    /// asking for "now" or "later". Off unless the user turned it on.
+    fn auto_pass(&mut self) {
+        self.last_auto = Instant::now();
+        if !self.settings.auto_update || self.scanning() {
+            return;
+        }
+        let procs = running::processes();
+        let now = Instant::now();
+        let mut idle = Vec::new();
+        let mut ask = Vec::new();
+        for app in self.apps.iter().filter(|a| self.queue.status(&a.id) == Status::Available) {
+            match running::state(app, &procs) {
+                State::Idle => idle.push(app.id.clone()),
+                State::InUse | State::Unknown => {
+                    if self.snooze.get(&app.id).is_none_or(|t| now >= *t) {
+                        ask.push(app.clone());
+                    }
+                }
+            }
+        }
+        // One question for all the open apps; ask again tomorrow at most, unless the answer says otherwise.
+        for app in &ask {
+            self.snooze.insert(app.id.clone(), now + Duration::from_secs(24 * 3600));
+        }
+        self.notifier.ask(&ask);
+        self.queue.enqueue(idle.iter().map(String::as_str));
+    }
+
+    fn poll_notify(&mut self) {
+        while let Ok(reply) = self.notify_rx.try_recv() {
+            match reply {
+                Reply::UpdateNow(ids) => {
+                    for id in ids {
+                        self.snooze.remove(&id);
+                        if self.scanning() {
+                            self.update_after_scan.push(id);
+                        } else if matches!(self.queue.status(&id), Status::Available | Status::Failed) {
+                            self.queue.enqueue([id.as_str()]);
+                        }
+                    }
+                }
+                Reply::Later(ids) => {
+                    for id in ids {
+                        self.snooze.insert(id, Instant::now() + Duration::from_secs(4 * 3600));
+                    }
+                }
+                Reply::Open => native::set_hidden(false),
+            }
+        }
     }
 
     fn poll_scan(&mut self) {
@@ -180,6 +271,9 @@ impl UpdatesApp {
                 self.queue = Queue::new(apps.iter().map(|a| a.id.clone()), CONCURRENCY);
                 self.apps = apps;
                 self.selected.clear();
+                let pending = std::mem::take(&mut self.update_after_scan);
+                self.queue.enqueue(pending.iter().map(String::as_str));
+                self.auto_pass();
             }
             Err(e) => self.scan_error = Some(e),
         }
@@ -259,6 +353,14 @@ impl eframe::App for UpdatesApp {
             theme::apply(&self.ctx, light);
         }
         self.menu_bar();
+        // The user may have installed a tool in Terminal: look again when the window is focused.
+        let focused = ui.input(|i| i.focused);
+        if focused && !self.was_focused {
+            self.tools = detect_tools();
+        }
+        self.was_focused = focused;
+        self.poll_mas_install();
+        self.poll_notify();
         self.poll_scan();
         self.poll_icons();
         while let Ok((id, result)) = self.done_rx.try_recv() {
@@ -279,8 +381,11 @@ impl eframe::App for UpdatesApp {
                 _ => {}
             }
         }
-        if self.settings.auto {
-            if self.last_scan.elapsed() >= Duration::from_secs(self.settings.hours as u64 * 3600) {
+        if self.settings.auto_update && self.last_auto.elapsed() >= Duration::from_secs(60) {
+            self.auto_pass();
+        }
+        if self.settings.auto || self.settings.auto_update {
+            if self.settings.auto && self.last_scan.elapsed() >= Duration::from_secs(self.settings.hours as u64 * 3600) {
                 self.start_scan();
             }
             ui.request_repaint_after(Duration::from_secs(60));
@@ -458,6 +563,9 @@ impl UpdatesApp {
             self.batch_banner(ui);
             ui.add_space(22.0);
         }
+        if self.setup_banner(ui) {
+            ui.add_space(22.0);
+        }
 
         ui.horizontal(|ui| {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -469,12 +577,7 @@ impl UpdatesApp {
                     .show(ui, |ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;
                         ui.horizontal(|ui| {
-                            for (label, f) in [
-                                ("Todas", Filter::All),
-                                ("App Store", Filter::Only(Source::AppStore)),
-                                ("Homebrew", Filter::Only(Source::Homebrew)),
-                                ("Directas", Filter::Only(Source::Direct)),
-                            ] {
+                            for (label, f) in source_filters() {
                                 if segment(ui, label, self.filter == f).clicked() {
                                     self.filter = f;
                                 }
@@ -582,6 +685,87 @@ impl UpdatesApp {
         }
     }
 
+    fn poll_mas_install(&mut self) {
+        let Some(rx) = &self.mas_install else { return };
+        let Ok(result) = rx.try_recv() else { return };
+        self.mas_install = None;
+        match result {
+            Ok(()) => {
+                self.tools = detect_tools();
+                self.start_scan();
+            }
+            Err(e) => self.setup_error = Some(e),
+        }
+    }
+
+    /// Offers to install Homebrew or `mas` (macOS). Nothing is installed without a click.
+    /// Returns whether it drew anything.
+    fn setup_banner(&mut self, ui: &mut Ui) -> bool {
+        let (brew, mas) = self.tools;
+        if !cfg!(target_os = "macos") || self.settings.hide_setup || (brew && mas) {
+            return false;
+        }
+        let installing = self.mas_install.is_some();
+        let (title, text, action) = if !brew {
+            (
+                "Falta Homebrew",
+                "Updateeer lo usa para buscar y actualizar tus apps. Se instala desde Terminal y te pedirá tu contraseña.",
+                "Instalar Homebrew",
+            )
+        } else {
+            (
+                "Falta mas para las apps de la App Store",
+                "Es una herramienta pequeña que se instala con Homebrew. Sin ella no se ven las actualizaciones de la App Store.",
+                "Instalar mas",
+            )
+        };
+        let mut install = false;
+        let mut dismiss = false;
+        Frame::new()
+            .fill(banner_bg())
+            .stroke(Stroke::new(1.0, Color32::from_rgba_unmultiplied(0xFF, 0x8A, 0x2A, 77)))
+            .corner_radius(14)
+            .inner_margin(Margin::symmetric(18, 16))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 12.0;
+                    ui.vertical(|ui| {
+                        ui.set_width(ui.available_width() - 300.0);
+                        ui.spacing_mut().item_spacing.y = 4.0;
+                        ui.label(RichText::new(title).size(14.0).family(semibold()));
+                        let detail = self.setup_error.clone().unwrap_or_else(|| text.to_string());
+                        ui.label(RichText::new(detail).size(13.0).color(muted()));
+                    });
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let label = if installing { "Instalando…" } else { action };
+                        install = widgets::button(ui, None, label, Kind::Primary, 36.0, !installing).clicked();
+                        dismiss = widgets::button(ui, None, "Ahora no", Kind::Soft, 36.0, !installing).clicked();
+                    });
+                });
+            });
+        if dismiss {
+            self.settings.hide_setup = true;
+            self.settings.save();
+        }
+        if install {
+            self.setup_error = None;
+            if !brew {
+                if let Err(e) = setup::open_homebrew_installer() {
+                    self.setup_error = Some(e);
+                }
+            } else {
+                let (tx, ctx) = (mpsc::channel(), self.ctx.clone());
+                let sender = tx.0;
+                thread::spawn(move || {
+                    let _ = sender.send(setup::install_mas());
+                    ctx.request_repaint();
+                });
+                self.mas_install = Some(tx.1);
+            }
+        }
+        true
+    }
+
     fn batch_banner(&mut self, ui: &mut Ui) {
         let (done, total, pct) = self.queue.batch_progress();
         Frame::new()
@@ -607,6 +791,7 @@ impl UpdatesApp {
                     });
                     if widgets::button(ui, None, "Cancelar", Kind::Soft, 36.0, true).clicked() {
                         self.queue.cancel();
+                        scan::cancel_running();
                     }
                 });
             });
