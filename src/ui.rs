@@ -1,4 +1,6 @@
 use std::collections::HashSet;
+use std::sync::mpsc::{self, Receiver};
+use std::thread;
 
 use eframe::egui::{
     self, Align, Align2, Button, CornerRadius, FontId, Frame, Layout, Margin, RichText, ScrollArea,
@@ -7,6 +9,7 @@ use eframe::egui::{
 
 use crate::model::{self, App, Source};
 use crate::queue::{Queue, Status};
+use crate::scan;
 use crate::theme::*;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -21,6 +24,9 @@ pub struct UpdatesApp {
     query: String,
     filter: Filter,
     queue: Queue,
+    ctx: egui::Context,
+    scan_rx: Option<Receiver<Result<Vec<App>, String>>>,
+    scan_error: Option<String>,
 }
 
 /// Simulated download speed until adapters report real progress.
@@ -28,14 +34,50 @@ const SIM_MB_PER_SEC: f32 = 60.0;
 const CONCURRENCY: usize = 2;
 
 impl UpdatesApp {
-    pub fn new() -> Self {
-        let apps = model::mock_apps();
-        Self {
-            queue: Queue::new(apps.iter().map(|a| a.id.clone()), CONCURRENCY),
-            apps,
+    pub fn new(ctx: egui::Context) -> Self {
+        let mut app = Self {
+            apps: Vec::new(),
             selected: HashSet::new(),
             query: String::new(),
             filter: Filter::All,
+            queue: Queue::new([], CONCURRENCY),
+            ctx,
+            scan_rx: None,
+            scan_error: None,
+        };
+        app.start_scan();
+        app
+    }
+
+    fn scanning(&self) -> bool {
+        self.scan_rx.is_some()
+    }
+
+    fn start_scan(&mut self) {
+        if self.scanning() || self.queue.is_busy() {
+            return;
+        }
+        let (tx, rx) = mpsc::channel();
+        let ctx = self.ctx.clone();
+        thread::spawn(move || {
+            let _ = tx.send(scan::scan());
+            ctx.request_repaint();
+        });
+        self.scan_rx = Some(rx);
+        self.scan_error = None;
+    }
+
+    fn poll_scan(&mut self) {
+        let Some(rx) = &self.scan_rx else { return };
+        let Ok(result) = rx.try_recv() else { return };
+        self.scan_rx = None;
+        match result {
+            Ok(apps) => {
+                self.queue = Queue::new(apps.iter().map(|a| a.id.clone()), CONCURRENCY);
+                self.apps = apps;
+                self.selected.clear();
+            }
+            Err(e) => self.scan_error = Some(e),
         }
     }
 
@@ -56,11 +98,12 @@ impl UpdatesApp {
 
 impl eframe::App for UpdatesApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.poll_scan();
         if self.queue.is_busy() {
             let dt = ui.input(|i| i.stable_dt);
             let apps = &self.apps;
             self.queue.tick(|id| {
-                let mb = apps.iter().find(|a| a.id == id).map_or(100, |a| a.size_mb).max(1);
+                let mb = apps.iter().find(|a| a.id == id).and_then(|a| a.size_mb).unwrap_or(100).max(1);
                 dt * SIM_MB_PER_SEC / mb as f32 * 100.0
             });
             ui.request_repaint();
@@ -108,10 +151,15 @@ impl UpdatesApp {
             .apps
             .iter()
             .filter(|a| self.queue.status(&a.id) == Status::Available)
-            .map(|a| a.size_mb)
+            .filter_map(|a| a.size_mb)
             .sum();
-        let summary = if available > 0 {
-            format!("{available} disponibles · {}", model::format_size(total_mb))
+        let summary = if self.scanning() {
+            "Buscando actualizaciones…".to_string()
+        } else if let Some(e) = &self.scan_error {
+            format!("No se pudo buscar: {e}")
+        } else if available > 0 {
+            let size = if total_mb > 0 { format!(" · {}", model::format_size(Some(total_mb))) } else { String::new() };
+            format!("{available} disponibles{size}")
         } else if self.queue.is_busy() {
             "Actualizando…".to_string()
         } else {
@@ -129,7 +177,11 @@ impl UpdatesApp {
                     self.queue.enqueue(ids.iter().map(String::as_str));
                     self.selected.clear();
                 }
-                ui.add(Button::new(RichText::new("Buscar actualizaciones").strong()).min_size(Vec2::new(0.0, 44.0)));
+                let idle = !self.scanning() && !self.queue.is_busy();
+                let b = Button::new(RichText::new("Buscar actualizaciones").strong()).min_size(Vec2::new(0.0, 44.0));
+                if ui.add_enabled(idle, b).clicked() {
+                    self.start_scan();
+                }
             });
         });
         ui.add_space(22.0);

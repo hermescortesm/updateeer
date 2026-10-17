@@ -1,5 +1,6 @@
 mod model;
 mod queue;
+mod scan;
 mod theme;
 mod ui;
 
@@ -16,7 +17,7 @@ fn main() -> eframe::Result {
         options,
         Box::new(|cc| {
             theme::apply(&cc.egui_ctx);
-            Ok(Box::new(ui::UpdatesApp::new()))
+            Ok(Box::new(ui::UpdatesApp::new(cc.egui_ctx.clone())))
         }),
     )
 }
