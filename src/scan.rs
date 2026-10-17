@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-use crate::{local, mas};
+use crate::{local, mas, winpkg};
 use crate::model::{App, Source};
 
 const BREW_PATHS: [&str; 2] = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"];
@@ -24,6 +24,11 @@ pub fn cancel_running() {
 
 /// SIGTERM to the whole process group (brew spawns curl, ruby…), then the process itself.
 fn kill_tree(child: &mut std::process::Child) {
+    // Windows: take down the whole tree.
+    #[cfg(windows)]
+    {
+        let _ = Command::new("taskkill").args(["/PID", &child.id().to_string(), "/T", "/F"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    }
     #[cfg(unix)]
     {
         let _ = Command::new("/bin/kill").args(["-TERM", "--", &format!("-{}", child.id())]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
@@ -56,6 +61,9 @@ pub fn run(mut cmd: Command, args: &[&str], timeout: Duration) -> Result<String,
     let generation = CANCEL_GEN.load(Ordering::SeqCst);
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+    // No console window flashing up for every command.
+    #[cfg(windows)]
+    std::os::windows::process::CommandExt::creation_flags(&mut cmd, 0x0800_0000);
     cmd.args(args)
         // Never wait on a prompt (e.g. sudo): fail instead of hanging.
         .stdin(Stdio::null())
@@ -81,7 +89,9 @@ pub fn run(mut cmd: Command, args: &[&str], timeout: Duration) -> Result<String,
     let out = out_h.join().unwrap_or_default();
     let err = err_h.join().unwrap_or_default();
     if !status.success() {
-        return Err(tail(&String::from_utf8_lossy(&err)));
+        // winget and Chocolatey report errors on stdout.
+        let msg = tail(&String::from_utf8_lossy(&err));
+        return Err(if msg.is_empty() { tail(&String::from_utf8_lossy(&out)) } else { msg });
     }
     String::from_utf8(out).map_err(|e| e.to_string())
 }
@@ -112,17 +122,34 @@ pub type Found = (Vec<App>, Option<String>);
 
 /// Homebrew and App Store together. Fails only when no source worked.
 pub fn scan() -> Result<Found, String> {
-    let brew_result = brew_path().map(|_| scan_brew());
-    let mas_result = mas::path().map(|_| mas::outdated());
-    merge(brew_result, mas_result)
+    merge(sources(false))
+}
+
+type SourceResult = (&'static str, Option<Result<Vec<App>, String>>);
+
+/// The package managers of this OS, each `None` when not installed. `installed`: list what is
+/// installed instead of what is outdated.
+fn sources(installed: bool) -> Vec<SourceResult> {
+    if cfg!(windows) {
+        vec![
+            ("winget", winpkg::winget_path().map(|_| if installed { winpkg::winget_installed() } else { winpkg::winget_outdated() })),
+            ("Scoop", winpkg::scoop_path().map(|_| if installed { winpkg::scoop_installed() } else { winpkg::scoop_outdated() })),
+            ("Chocolatey", winpkg::choco_path().map(|_| if installed { winpkg::choco_installed() } else { winpkg::choco_outdated() })),
+        ]
+    } else {
+        vec![
+            ("Homebrew", brew_path().map(|_| if installed { installed_brew() } else { scan_brew() })),
+            ("App Store", mas::path().map(|_| if installed { mas::installed() } else { mas::outdated() })),
+        ]
+    }
 }
 
 /// A source that is not installed (`None`) is skipped; one that fails only warns if another worked.
-fn merge(brew: Option<Result<Vec<App>, String>>, mas: Option<Result<Vec<App>, String>>) -> Result<Found, String> {
+fn merge(sources: Vec<SourceResult>) -> Result<Found, String> {
     let mut apps = Vec::new();
     let mut errors = Vec::new();
     let mut worked = false;
-    for (name, r) in [("Homebrew", brew), ("App Store", mas)] {
+    for (name, r) in sources {
         match r {
             Some(Ok(a)) => {
                 worked = true;
@@ -134,7 +161,7 @@ fn merge(brew: Option<Result<Vec<App>, String>>, mas: Option<Result<Vec<App>, St
     }
     let text = errors.iter().map(|(n, e)| format!("{n}: {e}")).collect::<Vec<_>>().join(" · ");
     if !worked {
-        return Err(if text.is_empty() { "No hay Homebrew ni mas instalados".into() } else { text });
+        return Err(if text.is_empty() { "No se encontró ningún gestor de paquetes compatible (Homebrew, winget, Scoop o Chocolatey)".into() } else { text });
     }
     local::enrich(&mut apps);
     apps.sort_by_key(|a| a.name.to_lowercase());
@@ -159,9 +186,7 @@ fn scan_brew() -> Result<Vec<App>, String> {
 
 /// Everything installed through Homebrew: casks plus the formulae the user asked for.
 pub fn installed() -> Result<Found, String> {
-    let brew_result = brew_path().map(|_| installed_brew());
-    let mas_result = mas::path().map(|_| mas::installed());
-    let (mut apps, warning) = match merge(brew_result, mas_result) {
+    let (mut apps, warning) = match merge(sources(true)) {
         Ok(found) => found,
         Err(e) => (Vec::new(), Some(e)),
     };
@@ -324,11 +349,11 @@ mod tests {
     #[test]
     fn merge_skips_missing_and_warns_on_partial_failure() {
         let a = |n: &str| app(format!("cask:{n}"), n, "x", "1".into(), "2".into());
-        let (apps, warn) = merge(Some(Ok(vec![a("b")])), Some(Err("sin sesión".into()))).unwrap();
+        let (apps, warn) = merge(vec![("Homebrew", Some(Ok(vec![a("b")]))), ("App Store", Some(Err("sin sesión".into())))]).unwrap();
         assert_eq!((apps.len(), warn.as_deref()), (1, Some("App Store: sin sesión")));
-        assert!(merge(Some(Err("x".into())), Some(Err("y".into()))).is_err());
-        assert_eq!(merge(None, Some(Ok(vec![]))).unwrap().1, None);
-        assert!(merge(None, None).is_err());
+        assert!(merge(vec![("a", Some(Err("x".into()))), ("b", Some(Err("y".into())))]).is_err());
+        assert_eq!(merge(vec![("a", None), ("b", Some(Ok(vec![])))]).unwrap().1, None);
+        assert!(merge(vec![("a", None), ("b", None)]).is_err());
     }
 
     #[cfg(unix)]
