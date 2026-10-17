@@ -176,9 +176,13 @@ impl UpdatesApp {
             format!("{available} disponibles{size}")
         } else if self.queue.is_busy() {
             "Actualizando…".to_string()
+        } else if self.queue.failed_count() > 0 {
+            format!("{} fallidas", self.queue.failed_count())
         } else {
             "Todo al día".to_string()
         };
+        // No actions while a scan runs: its result replaces the queue.
+        let can_act = !self.scanning();
 
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
@@ -186,9 +190,9 @@ impl UpdatesApp {
                 ui.label(RichText::new("Actualizaciones").size(36.0).family(display()));
                 ui.label(RichText::new(summary).size(14.0).color(MUTED));
             });
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.with_layout(Layout::right_to_left(Align::Max), |ui| {
                 ui.spacing_mut().item_spacing.x = 16.0;
-                if widgets::button(ui, Some(Icon::Download), "Actualizar todo", Kind::Primary, 44.0, available > 0).clicked() {
+                if widgets::button(ui, Some(Icon::Download), "Actualizar todo", Kind::Primary, 44.0, available > 0 && can_act).clicked() {
                     let ids: Vec<String> = self.queue.available().map(String::from).collect();
                     self.queue.enqueue(ids.iter().map(String::as_str));
                     self.selected.clear();
@@ -230,10 +234,15 @@ impl UpdatesApp {
                     });
                 let field = ui.add(
                     TextEdit::singleline(&mut self.query)
+                        .font(FontId::proportional(14.0))
                         .hint_text("Buscar app…")
                         .desired_width(ui.available_width())
                         .margin(Margin { left: 40, right: 14, top: 12, bottom: 13 }),
                 );
+                if field.has_focus() {
+                    let glow = Color32::from_rgba_unmultiplied(0xFF, 0x8A, 0x2A, 41);
+                    ui.painter().rect_stroke(field.rect.expand(2.0), CornerRadius::same(12), Stroke::new(4.0, glow), egui::StrokeKind::Outside);
+                }
                 let c = Pos2::new(field.rect.left() + 14.0 + 8.0, field.rect.center().y);
                 widgets::icon(ui, Rect::from_center_size(c, Vec2::splat(16.0)), Icon::Search, FAINT, 2.2);
             });
@@ -275,7 +284,7 @@ impl UpdatesApp {
                 };
                 inner.label(RichText::new(label).size(13.0).family(semibold()).color(TEXT_2));
                 inner.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if widgets::button(ui, None, "Actualizar seleccionadas", Kind::Primary, 34.0, n > 0).clicked() {
+                    if widgets::button(ui, None, "Actualizar seleccionadas", Kind::Primary, 34.0, n > 0 && can_act).clicked() {
                         to_update.extend(visible_ids.iter().filter(|id| self.selected.contains(*id)).cloned());
                     }
                 });
@@ -283,8 +292,13 @@ impl UpdatesApp {
                     if rows.is_empty() {
                         ui.add_space(64.0);
                         ui.vertical_centered(|ui| {
-                            let msg = if self.scanning() { "Buscando…" } else if self.apps.is_empty() { "No hay actualizaciones." } else { "Ninguna app coincide con tu búsqueda." };
-                            ui.label(RichText::new(msg).color(FAINT));
+                            let (msg, color) = match (&self.scan_error, self.scanning(), self.apps.is_empty()) {
+                                (Some(e), false, _) => (format!("No se pudo buscar: {e}"), MUTED),
+                                (_, true, _) => ("Buscando…".into(), FAINT),
+                                (_, _, true) => ("No hay actualizaciones.".into(), FAINT),
+                                _ => ("Ninguna app coincide con tu búsqueda.".into(), FAINT),
+                            };
+                            ui.label(RichText::new(msg).color(color));
                         });
                     }
                     for &i in &rows {
@@ -293,7 +307,7 @@ impl UpdatesApp {
                         let mut sel = self.selected.contains(&app.id);
                         let was = sel;
                         let err = self.queue.error(&app.id);
-                        if row(ui, app, status, err, &mut sel) {
+                        if row(ui, app, status, err, &mut sel, can_act) {
                             to_update.push(app.id.clone());
                         }
                         if sel != was {
@@ -360,14 +374,15 @@ fn cell(ui: &mut Ui, row: Rect, x0: f32, x1: f32, layout: Layout, add: impl FnOn
 }
 
 /// One 68px row. Returns true when its own "Actualizar"/"Reintentar" was clicked.
-fn row(ui: &mut Ui, app: &App, status: Status, error: Option<&str>, selected: &mut bool) -> bool {
+fn row(ui: &mut Ui, app: &App, status: Status, error: Option<&str>, selected: &mut bool, enabled: bool) -> bool {
     // Per-app id scope: cells of different rows must not share widget ids.
-    ui.push_id(&app.id, |ui| row_inner(ui, app, status, error, selected)).inner
+    ui.push_id(&app.id, |ui| row_inner(ui, app, status, error, selected, enabled)).inner
 }
 
-fn row_inner(ui: &mut Ui, app: &App, status: Status, error: Option<&str>, selected: &mut bool) -> bool {
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 68.0), Sense::hover());
-    if resp.hovered() {
+fn row_inner(ui: &mut Ui, app: &App, status: Status, error: Option<&str>, selected: &mut bool, enabled: bool) -> bool {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 68.0), Sense::hover());
+    // Not `resp.hovered()`: that goes false while the pointer is over the row's own buttons.
+    if ui.rect_contains_pointer(rect) {
         ui.painter().rect_filled(rect, 0, Color32::from_white_alpha(6));
     }
     ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, Color32::from_white_alpha(10)));
@@ -402,10 +417,10 @@ fn row_inner(ui: &mut Ui, app: &App, status: Status, error: Option<&str>, select
         ui.label(RichText::new(model::format_size(app.size_mb)).monospace().size(12.5).color(FAINT));
     });
     cell(ui, rect, action_x, right, rtl, |ui| match status {
-        Status::Available => clicked = widgets::button(ui, None, "Actualizar", Kind::Soft, 34.0, true).clicked(),
+        Status::Available => clicked = widgets::button(ui, None, "Actualizar", Kind::Soft, 34.0, enabled).clicked(),
         Status::Failed => {
             let tip = error.unwrap_or("Error desconocido").to_string();
-            clicked = widgets::button(ui, None, "Reintentar", Kind::Soft, 34.0, true).on_hover_text(tip).clicked();
+            clicked = widgets::button(ui, None, "Reintentar", Kind::Soft, 34.0, enabled).on_hover_text(tip).clicked();
         }
         Status::Queued => {
             ui.label(RichText::new("En cola").size(13.0).color(FAINT));

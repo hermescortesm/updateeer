@@ -53,6 +53,10 @@ impl Queue {
         self.available().count()
     }
 
+    pub fn failed_count(&self) -> usize {
+        self.status.values().filter(|s| **s == Status::Failed).count()
+    }
+
     pub fn is_busy(&self) -> bool {
         self.status.values().any(|s| matches!(s, Status::Queued | Status::Updating(_)))
     }
@@ -70,7 +74,9 @@ impl Queue {
                 *s = Status::Queued;
                 self.attempts.remove(id);
                 self.errors.remove(id);
-                self.batch.push(id.to_string());
+                if !self.batch.iter().any(|b| b == id) {
+                    self.batch.push(id.to_string());
+                }
             }
         }
     }
@@ -143,6 +149,8 @@ impl Queue {
                     done += 1;
                     sum += 100.0;
                 }
+                // Finished without success: counts toward the bar so it can reach 100%.
+                Status::Failed => sum += 100.0,
                 Status::Updating(p) => sum += p,
                 _ => {}
             }
@@ -211,6 +219,20 @@ mod tests {
         }
         let Status::Updating(p) = q.status("a") else { panic!() };
         assert!(p <= CREEP_CAP);
+    }
+
+    #[test]
+    fn retry_in_active_batch_is_not_double_counted() {
+        let mut q = q();
+        q.enqueue(["a", "b"]);
+        q.start_ready();
+        q.finish("a", Err("x".into()));
+        q.start_ready();
+        q.finish("a", Err("x".into()));
+        assert_eq!(q.status("a"), Status::Failed);
+        q.enqueue(["a"]); // retry while b is still running
+        assert_eq!(q.batch_progress().1, 2);
+        assert_eq!(q.failed_count(), 0);
     }
 
     #[test]
