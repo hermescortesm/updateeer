@@ -1,7 +1,7 @@
 //! Finds outdated apps. Today: Homebrew casks and the formulae the user installed on purpose.
 use std::collections::HashSet;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use serde_json::Value;
 
@@ -9,7 +9,7 @@ use crate::model::{App, Source};
 
 const BREW_PATHS: [&str; 2] = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"];
 
-fn brew(args: &[&str]) -> Result<String, String> {
+pub fn brew(args: &[&str]) -> Result<String, String> {
     // Absolute path, no shell: nothing from PATH or user text gets interpreted.
     let bin = BREW_PATHS
         .iter()
@@ -18,6 +18,8 @@ fn brew(args: &[&str]) -> Result<String, String> {
     let out = Command::new(bin)
         .args(args)
         .env("HOMEBREW_NO_ENV_HINTS", "1")
+        // Never wait on a prompt (e.g. sudo): fail instead of hanging.
+        .stdin(Stdio::null())
         .output()
         .map_err(|e| e.to_string())?;
     if !out.status.success() {
@@ -43,7 +45,7 @@ pub fn scan() -> Result<Vec<App>, String> {
 }
 
 /// Brew names are `[a-z0-9@._+-]`; reject anything that could pass as a flag.
-fn safe_token(t: &str) -> bool {
+pub fn safe_token(t: &str) -> bool {
     !t.starts_with('-') && t.bytes().all(|b| b.is_ascii_alphanumeric() || b"@._+-".contains(&b))
 }
 

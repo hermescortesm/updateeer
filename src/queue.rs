@@ -1,19 +1,28 @@
 use std::collections::HashMap;
 
+/// Attempts per app before it is marked failed.
+const MAX_ATTEMPTS: u8 = 2;
+/// Progress is estimated (brew reports none): it creeps toward this until the process ends.
+const CREEP_CAP: f32 = 90.0;
+const CREEP_SECS: f32 = 20.0;
+
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Status {
     Available,
     Queued,
-    /// Progress 0..=100.
+    /// Estimated progress 0..=100.
     Updating(f32),
     Done,
+    Failed,
 }
 
-/// Update queue: runs up to `concurrency` updates at once. It only tracks state;
-/// whoever drives it reports progress through `tick`.
+/// Update queue: tracks state and hands out work, up to `concurrency` at once.
+/// The caller runs the updates and reports back with `finish`.
 pub struct Queue {
     status: HashMap<String, Status>,
     batch: Vec<String>,
+    attempts: HashMap<String, u8>,
+    errors: HashMap<String, String>,
     concurrency: usize,
 }
 
@@ -22,12 +31,18 @@ impl Queue {
         Self {
             status: ids.into_iter().map(|id| (id, Status::Available)).collect(),
             batch: Vec::new(),
+            attempts: HashMap::new(),
+            errors: HashMap::new(),
             concurrency,
         }
     }
 
     pub fn status(&self, id: &str) -> Status {
         self.status.get(id).copied().unwrap_or(Status::Available)
+    }
+
+    pub fn error(&self, id: &str) -> Option<&str> {
+        self.errors.get(id).map(String::as_str)
     }
 
     pub fn available(&self) -> impl Iterator<Item = &str> {
@@ -42,35 +57,39 @@ impl Queue {
         self.status.values().any(|s| matches!(s, Status::Queued | Status::Updating(_)))
     }
 
-    /// Queues the ids that are still available; a new batch starts when idle.
+    /// Queues the ids that are available (or failed, which makes it a retry).
+    /// A new batch starts when idle.
     pub fn enqueue<'a>(&mut self, ids: impl IntoIterator<Item = &'a str>) {
         if !self.is_busy() {
             self.batch.clear();
         }
         for id in ids {
             if let Some(s) = self.status.get_mut(id)
-                && *s == Status::Available
+                && matches!(*s, Status::Available | Status::Failed)
             {
                 *s = Status::Queued;
+                self.attempts.remove(id);
+                self.errors.remove(id);
                 self.batch.push(id.to_string());
             }
         }
     }
 
-    /// Back to available for everything queued or in flight.
+    /// Un-queues what has not started. Running updates cannot be interrupted safely.
     pub fn cancel(&mut self) {
         for s in self.status.values_mut() {
-            if matches!(s, Status::Queued | Status::Updating(_)) {
+            if *s == Status::Queued {
                 *s = Status::Available;
             }
         }
-        self.batch.clear();
+        let status = &self.status;
+        self.batch.retain(|id| status.get(id) != Some(&Status::Available));
     }
 
-    /// Starts queued items up to the concurrency limit, then adds `advance(id)`
-    /// percentage points to each running one.
-    pub fn tick(&mut self, advance: impl Fn(&str) -> f32) {
+    /// Moves queued items to updating while there is room; returns the ones just started.
+    pub fn start_ready(&mut self) -> Vec<String> {
         let mut running = self.status.values().filter(|s| matches!(s, Status::Updating(_))).count();
+        let mut started = Vec::new();
         // Batch order keeps the start order stable (HashMap iteration is not).
         for id in &self.batch {
             if running >= self.concurrency {
@@ -81,12 +100,35 @@ impl Queue {
             {
                 *s = Status::Updating(0.0);
                 running += 1;
+                started.push(id.clone());
             }
         }
-        for (id, s) in self.status.iter_mut() {
-            if let Status::Updating(p) = *s {
-                let p = p + advance(id);
-                *s = if p >= 100.0 { Status::Done } else { Status::Updating(p) };
+        started
+    }
+
+    /// Advances the estimated progress of running items by `dt` seconds.
+    pub fn creep(&mut self, dt: f32) {
+        for s in self.status.values_mut() {
+            if let Status::Updating(p) = s {
+                *p += (CREEP_CAP - *p) * (dt / CREEP_SECS).min(1.0);
+            }
+        }
+    }
+
+    /// Records the outcome of a started update. A failure is retried until attempts run out.
+    pub fn finish(&mut self, id: &str, result: Result<(), String>) {
+        let Some(s) = self.status.get_mut(id) else { return };
+        match result {
+            Ok(()) => *s = Status::Done,
+            Err(e) => {
+                let n = self.attempts.entry(id.to_string()).or_insert(0);
+                *n += 1;
+                if *n < MAX_ATTEMPTS {
+                    *s = Status::Queued;
+                } else {
+                    *s = Status::Failed;
+                    self.errors.insert(id.to_string(), e);
+                }
             }
         }
     }
@@ -121,28 +163,54 @@ mod tests {
     fn respects_concurrency_and_finishes() {
         let mut q = q();
         q.enqueue(["a", "b", "c"]);
-        q.tick(|_| 40.0);
-        assert_eq!(q.status("a"), Status::Updating(40.0));
-        assert_eq!(q.status("b"), Status::Updating(40.0));
+        assert_eq!(q.start_ready(), ["a", "b"]);
         assert_eq!(q.status("c"), Status::Queued);
-        q.tick(|_| 60.0);
-        assert_eq!(q.status("a"), Status::Done);
-        q.tick(|_| 60.0);
-        assert_eq!(q.status("c"), Status::Updating(60.0));
-        q.tick(|_| 60.0);
+        assert!(q.start_ready().is_empty());
+        q.finish("a", Ok(()));
+        assert_eq!(q.start_ready(), ["c"]);
+        q.finish("b", Ok(()));
+        q.finish("c", Ok(()));
         assert!(!q.is_busy());
         assert_eq!(q.batch_progress(), (3, 3, 100.0));
     }
 
     #[test]
-    fn cancel_restores_available_and_skips_done() {
+    fn retries_then_fails_and_can_retry_manually() {
+        let mut q = q();
+        q.enqueue(["a"]);
+        q.start_ready();
+        q.finish("a", Err("boom".into()));
+        assert_eq!(q.status("a"), Status::Queued); // automatic retry
+        assert_eq!(q.start_ready(), ["a"]);
+        q.finish("a", Err("boom".into()));
+        assert_eq!(q.status("a"), Status::Failed);
+        assert_eq!(q.error("a"), Some("boom"));
+        q.enqueue(["a"]);
+        assert_eq!(q.status("a"), Status::Queued);
+        assert_eq!(q.error("a"), None);
+    }
+
+    #[test]
+    fn cancel_only_drops_queued() {
         let mut q = q();
         q.enqueue(["a", "b", "c"]);
-        q.tick(|_| 100.0); // a, b done
+        q.start_ready(); // a, b running
         q.cancel();
-        assert_eq!(q.status("a"), Status::Done);
+        assert_eq!(q.status("a"), Status::Updating(0.0));
         assert_eq!(q.status("c"), Status::Available);
-        assert_eq!(q.available_count(), 1);
+        assert_eq!(q.batch_progress().1, 2);
+    }
+
+    #[test]
+    fn creep_stays_below_cap() {
+        let mut q = q();
+        q.enqueue(["a"]);
+        q.start_ready();
+        for _ in 0..1000 {
+            q.creep(1.0);
+        }
+        let Status::Updating(p) = q.status("a") else { panic!() };
+        assert!(p <= CREEP_CAP);
     }
 
     #[test]

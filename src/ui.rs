@@ -1,5 +1,6 @@
 use std::collections::HashSet;
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::time::Duration;
 use std::thread;
 
 use eframe::egui::{
@@ -9,7 +10,7 @@ use eframe::egui::{
 
 use crate::model::{self, App, Source};
 use crate::queue::{Queue, Status};
-use crate::scan;
+use crate::{scan, upgrade};
 use crate::theme::*;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -27,14 +28,15 @@ pub struct UpdatesApp {
     ctx: egui::Context,
     scan_rx: Option<Receiver<Result<Vec<App>, String>>>,
     scan_error: Option<String>,
+    done_tx: Sender<(String, Result<(), String>)>,
+    done_rx: Receiver<(String, Result<(), String>)>,
 }
 
-/// Simulated download speed until adapters report real progress.
-const SIM_MB_PER_SEC: f32 = 60.0;
 const CONCURRENCY: usize = 2;
 
 impl UpdatesApp {
     pub fn new(ctx: egui::Context) -> Self {
+        let (done_tx, done_rx) = mpsc::channel();
         let mut app = Self {
             apps: Vec::new(),
             selected: HashSet::new(),
@@ -44,6 +46,8 @@ impl UpdatesApp {
             ctx,
             scan_rx: None,
             scan_error: None,
+            done_tx,
+            done_rx,
         };
         app.start_scan();
         app
@@ -99,14 +103,20 @@ impl UpdatesApp {
 impl eframe::App for UpdatesApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.poll_scan();
+        while let Ok((id, result)) = self.done_rx.try_recv() {
+            self.queue.finish(&id, result);
+        }
         if self.queue.is_busy() {
-            let dt = ui.input(|i| i.stable_dt);
-            let apps = &self.apps;
-            self.queue.tick(|id| {
-                let mb = apps.iter().find(|a| a.id == id).and_then(|a| a.size_mb).unwrap_or(100).max(1);
-                dt * SIM_MB_PER_SEC / mb as f32 * 100.0
-            });
-            ui.request_repaint();
+            self.queue.creep(ui.input(|i| i.stable_dt));
+            for id in self.queue.start_ready() {
+                let (tx, ctx) = (self.done_tx.clone(), self.ctx.clone());
+                thread::spawn(move || {
+                    let result = upgrade::run(&id);
+                    let _ = tx.send((id, result));
+                    ctx.request_repaint();
+                });
+            }
+            ui.request_repaint_after(Duration::from_millis(100));
         }
         egui::Panel::left("nav")
             .exact_size(236.0)
@@ -339,6 +349,13 @@ impl UpdatesApp {
                                     });
                                     progress_bar(ui, p / 100.0, 5.0);
                                 });
+                            }
+                            Status::Failed => {
+                                let tip = self.queue.error(&app.id).unwrap_or("Error desconocido").to_string();
+                                let b = Button::new(RichText::new("Reintentar").size(13.0).strong().color(ERR)).min_size(Vec2::new(0.0, 34.0));
+                                if ui.add(b).on_hover_text(tip).clicked() {
+                                    self.queue.enqueue([app.id.as_str()]);
+                                }
                             }
                             Status::Done => {
                                 ui.label(RichText::new("✓ Actualizada").size(13.0).strong().color(OK));
