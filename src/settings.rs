@@ -35,11 +35,13 @@ pub struct Settings {
     pub auto: bool,
     pub hours: u32,
     pub theme: ThemeMode,
+    /// The user dismissed the "install Homebrew / mas" prompt.
+    pub hide_setup: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { auto: true, hours: 6, theme: ThemeMode::System }
+        Self { auto: true, hours: 6, theme: ThemeMode::System, hide_setup: false }
     }
 }
 
@@ -61,6 +63,7 @@ impl Settings {
         let d = Self::default();
         Self {
             auto: v["auto"].as_bool().unwrap_or(d.auto),
+            hide_setup: v["hide_setup"].as_bool().unwrap_or(d.hide_setup),
             theme: v["theme"].as_str().map_or(d.theme, ThemeMode::from_name),
             hours: v["hours"].as_u64().map(|h| h as u32).filter(|h| HOURS.contains(h)).unwrap_or(d.hours),
         }
@@ -72,7 +75,7 @@ impl Settings {
         if let Some(dir) = p.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        let _ = std::fs::write(p, json!({ "auto": self.auto, "hours": self.hours, "theme": self.theme.name() }).to_string());
+        let _ = std::fs::write(p, json!({ "auto": self.auto, "hours": self.hours, "theme": self.theme.name(), "hide_setup": self.hide_setup }).to_string());
     }
 }
 
@@ -82,7 +85,7 @@ mod tests {
 
     #[test]
     fn parse_validates_and_defaults() {
-        assert_eq!(Settings::parse(r#"{"auto":false,"hours":12,"theme":"light"}"#), Settings { auto: false, hours: 12, theme: ThemeMode::Light });
+        assert_eq!(Settings::parse(r#"{"auto":false,"hours":12,"theme":"light"}"#), Settings { auto: false, hours: 12, theme: ThemeMode::Light, hide_setup: false });
         assert_eq!(Settings::parse(r#"{"hours":7}"#), Settings::default());
         assert_eq!(Settings::parse("garbage"), Settings::default());
     }
