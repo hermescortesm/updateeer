@@ -5,7 +5,7 @@ use std::thread;
 
 use eframe::egui::{
     self, Align, Align2, Button, CornerRadius, FontId, Frame, Layout, Margin, RichText, ScrollArea,
-    Sense, Stroke, StrokeKind, TextEdit, Vec2,
+    Color32, Sense, Stroke, TextEdit, Vec2,
 };
 
 use crate::model::{self, App, Source};
@@ -273,7 +273,8 @@ impl UpdatesApp {
                                 if on { self.selected.insert(id.clone()); } else { self.selected.remove(id); }
                             }
                         }
-                        let n = self.selected.len();
+                        let sel_visible: Vec<&String> = visible_ids.iter().filter(|id| self.selected.contains(*id)).collect();
+                        let n = sel_visible.len();
                         let label = match n {
                             0 => "Seleccionar todas".to_string(),
                             1 => "1 seleccionada".to_string(),
@@ -284,7 +285,10 @@ impl UpdatesApp {
                             ui.add_space(18.0);
                             let b = primary_button("Actualizar seleccionadas").min_size(Vec2::new(0.0, 34.0));
                             if ui.add_enabled(n > 0, b).clicked() {
-                                let ids: Vec<String> = self.selected.drain().collect();
+                                let ids: Vec<String> = visible_ids.iter().filter(|id| self.selected.contains(*id)).cloned().collect();
+                                for id in &ids {
+                                    self.selected.remove(id);
+                                }
                                 self.queue.enqueue(ids.iter().map(String::as_str));
                             }
                         });
@@ -292,6 +296,7 @@ impl UpdatesApp {
                 });
                 ui.separator();
                 ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
                     if rows.is_empty() {
                         ui.add_space(64.0);
                         ui.vertical_centered(|ui| {
@@ -373,7 +378,6 @@ impl UpdatesApp {
     }
 }
 
-use eframe::egui::Color32;
 
 fn primary_button(text: &str) -> Button<'static> {
     Button::new(RichText::new(text).size(14.0).strong().color(ON_ACCENT))
@@ -424,7 +428,6 @@ fn tile(ui: &mut egui::Ui, app: &App) {
 fn chip(ui: &mut egui::Ui, text: &str) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(86.0, 26.0), Sense::hover());
     ui.painter().rect_filled(rect, CornerRadius::same(7), Color32::from_white_alpha(13));
-    ui.painter().rect_stroke(rect, CornerRadius::same(7), Stroke::NONE, StrokeKind::Inside);
     ui.painter().text(rect.center(), Align2::CENTER_CENTER, text, FontId::proportional(12.0), TEXT_2);
 }
 
