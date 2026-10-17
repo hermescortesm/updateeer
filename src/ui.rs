@@ -27,6 +27,8 @@ pub enum Page {
     Installed,
     History,
     Settings,
+    /// One app's full data; `back` says where it was opened from.
+    Detail,
 }
 
 /// One finished upgrade of this session.
@@ -42,7 +44,7 @@ pub struct UpdatesApp {
     selected: HashSet<String>,
     pub(crate) query: String,
     filter: Filter,
-    queue: Queue,
+    pub(crate) queue: Queue,
     pub(crate) ctx: egui::Context,
     scan_rx: Option<Scan>,
     scan_error: Option<String>,
@@ -56,6 +58,8 @@ pub struct UpdatesApp {
     pub(crate) installed_stale: bool,
     pub(crate) installed_error: Option<String>,
     pub(crate) history: Vec<Entry>,
+    pub(crate) detail: Option<App>,
+    pub(crate) back: Page,
 }
 
 const CONCURRENCY: usize = 2;
@@ -82,12 +86,14 @@ impl UpdatesApp {
             installed_stale: true,
             installed_error: None,
             history: Vec::new(),
+            detail: None,
+            back: Page::Updates,
         };
         app.start_scan();
         app
     }
 
-    fn scanning(&self) -> bool {
+    pub(crate) fn scanning(&self) -> bool {
         self.scan_rx.is_some()
     }
 
@@ -182,6 +188,7 @@ impl eframe::App for UpdatesApp {
                 Page::Installed => self.installed_page(ui),
                 Page::History => self.history_page(ui),
                 Page::Settings => self.settings_page(ui),
+                Page::Detail => self.detail_page(ui),
             });
     }
 }
@@ -204,7 +211,8 @@ impl UpdatesApp {
             (Page::Settings, Icon::Sliders, "Ajustes"),
         ] {
             let badge = if page == Page::Updates { badge } else { None };
-            if widgets::nav_item(ui, icon, label, self.page == page, badge).clicked() {
+            let current = if self.page == Page::Detail { self.back } else { self.page };
+            if widgets::nav_item(ui, icon, label, current == page, badge).clicked() {
                 self.page = page;
             }
         }
@@ -216,10 +224,12 @@ impl UpdatesApp {
                 .inner_margin(14)
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    ui.spacing_mut().item_spacing.y = 4.0;
-                    ui.label(RichText::new("Búsqueda automática").size(12.0).family(semibold()).color(TEXT_2));
-                    let text = if self.settings.auto { format!("Cada {} h, con la app abierta", self.settings.hours) } else { "Desactivada".into() };
-                    ui.label(RichText::new(text).size(12.0).color(FAINT));
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = 4.0;
+                        ui.label(RichText::new("Búsqueda automática").size(12.0).family(semibold()).color(TEXT_2));
+                        let text = if self.settings.auto { format!("Cada {} h, con la app abierta", self.settings.hours) } else { "Desactivada".into() };
+                        ui.label(RichText::new(text).size(12.0).color(FAINT));
+                    });
                 });
         });
     }
@@ -310,6 +320,7 @@ impl UpdatesApp {
             .map(|a| a.id.clone())
             .collect();
         let mut to_update: Vec<String> = Vec::new();
+        let mut open: Option<App> = None;
         Frame::new()
             .fill(PANEL)
             .stroke(Stroke::new(1.0, LINE))
@@ -360,8 +371,12 @@ impl UpdatesApp {
                         let mut sel = self.selected.contains(&app.id);
                         let was = sel;
                         let err = self.queue.error(&app.id);
-                        if row(ui, app, status, err, &mut sel, can_act) {
+                        let (update, show) = row(ui, app, status, err, &mut sel, can_act);
+                        if update {
                             to_update.push(app.id.clone());
+                        }
+                        if show {
+                            open = Some(app.clone());
                         }
                         if sel != was {
                             if sel { self.selected.insert(app.id.clone()); } else { self.selected.remove(&app.id); }
@@ -369,6 +384,9 @@ impl UpdatesApp {
                     }
                 });
             });
+        if let Some(app) = open {
+            self.open_detail(app, Page::Updates);
+        }
         if !to_update.is_empty() {
             self.queue.enqueue(to_update.iter().map(String::as_str));
             for id in &to_update {
@@ -443,13 +461,13 @@ pub(crate) fn cell(ui: &mut Ui, row: Rect, x0: f32, x1: f32, layout: Layout, add
     add(&mut c);
 }
 
-/// One 68px row. Returns true when its own "Actualizar"/"Reintentar" was clicked.
-fn row(ui: &mut Ui, app: &App, status: Status, error: Option<&str>, selected: &mut bool, enabled: bool) -> bool {
+/// One 68px row. Returns (its own "Actualizar"/"Reintentar" was clicked, the row body was clicked).
+fn row(ui: &mut Ui, app: &App, status: Status, error: Option<&str>, selected: &mut bool, enabled: bool) -> (bool, bool) {
     // Per-app id scope: cells of different rows must not share widget ids.
     ui.push_id(&app.id, |ui| row_inner(ui, app, status, error, selected, enabled)).inner
 }
 
-fn row_inner(ui: &mut Ui, app: &App, status: Status, error: Option<&str>, selected: &mut bool, enabled: bool) -> bool {
+fn row_inner(ui: &mut Ui, app: &App, status: Status, error: Option<&str>, selected: &mut bool, enabled: bool) -> (bool, bool) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 68.0), Sense::hover());
     // Not `resp.hovered()`: that goes false while the pointer is over the row's own buttons.
     if ui.rect_contains_pointer(rect) {
@@ -460,6 +478,12 @@ fn row_inner(ui: &mut Ui, app: &App, status: Status, error: Option<&str>, select
     let ltr = Layout::left_to_right(Align::Center);
     let rtl = Layout::right_to_left(Align::Center);
     let mut clicked = false;
+    let action_x = right - 150.0;
+    let size_x = action_x - 14.0 - 64.0;
+    let chip_x = size_x - 14.0 - 86.0;
+    // Registered before the cells so the checkbox and buttons drawn over it win their own clicks.
+    let body = Rect::from_min_max(Pos2::new(left + 32.0, rect.top()), Pos2::new(chip_x + 86.0, rect.bottom()));
+    let shown = ui.interact(body, ui.make_persistent_id("open"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
 
     cell(ui, rect, left, left + 18.0, ltr, |ui| {
         ui.add_enabled(status == Status::Available, Checkbox::new(selected, ""));
@@ -472,15 +496,15 @@ fn row_inner(ui: &mut Ui, app: &App, status: Status, error: Option<&str>, select
         ui.add(egui::Label::new(RichText::new(&app.vendor).size(12.5).color(FAINT)).truncate());
     });
 
-    let action_x = right - 150.0;
-    let size_x = action_x - 14.0 - 64.0;
-    let chip_x = size_x - 14.0 - 86.0;
-    cell(ui, rect, left + 310.0, chip_x - 14.0, ltr, |ui| {
+    let (vx0, vx1) = (left + 310.0, chip_x - 14.0);
+    // Two versions and an arrow share this cell: 8px gaps, 14px arrow, ~8px per mono char.
+    let max_chars = (((vx1 - vx0 - 30.0) / 2.0) / 8.0).max(6.0) as usize;
+    cell(ui, rect, vx0, vx1, ltr, |ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
-        ui.label(RichText::new(&app.from).monospace().size(13.0).color(FAINT));
+        ui.label(RichText::new(widgets::short_version(&app.from, max_chars)).monospace().size(13.0).color(FAINT)).on_hover_text(&app.from);
         let (r, _) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
         widgets::icon(ui, r, Icon::Arrow, FAINT, 2.2);
-        ui.label(RichText::new(&app.to).monospace().size(13.0).color(ACCENT_TEXT));
+        ui.label(RichText::new(widgets::short_version(&app.to, max_chars)).monospace().size(13.0).color(ACCENT_TEXT)).on_hover_text(&app.to);
     });
     cell(ui, rect, chip_x, chip_x + 86.0, ltr, |ui| widgets::chip(ui, app.source.label()));
     cell(ui, rect, size_x, size_x + 64.0, rtl, |ui| {
@@ -519,5 +543,5 @@ fn row_inner(ui: &mut Ui, app: &App, status: Status, error: Option<&str>, select
             widgets::icon(ui, r, Icon::Check, OK, 2.6);
         }
     });
-    clicked
+    (clicked, shown)
 }

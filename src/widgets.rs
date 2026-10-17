@@ -162,10 +162,23 @@ pub fn nav_item(ui: &mut Ui, ic: Icon, label: &str, active: bool, badge: Option<
 }
 
 pub fn tile(ui: &mut Ui, app: &App) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::splat(40.0), Sense::hover());
-    ui.painter().rect_filled(rect, CornerRadius::same(11), tile_color(app.hue));
+    tile_sized(ui, app, 40.0);
+}
+
+pub fn tile_sized(ui: &mut Ui, app: &App, size: f32) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
+    ui.painter().rect_filled(rect, CornerRadius::same((size * 0.275) as u8), tile_color(app.hue));
     let initial = app.name.chars().next().unwrap_or('?').to_uppercase().to_string();
-    ui.painter().text(rect.center(), Align2::CENTER_CENTER, initial, FontId::new(17.0, semibold()), Color32::WHITE);
+    ui.painter().text(rect.center(), Align2::CENTER_CENTER, initial, FontId::new(size * 0.425, semibold()), Color32::WHITE);
+}
+
+/// Cuts a long version (`0.2026.09.30.08.29.stable_01`) to `max` chars with an ellipsis.
+pub fn short_version(v: &str, max: usize) -> String {
+    if v.chars().count() <= max {
+        return v.to_string();
+    }
+    let head: String = v.chars().take(max.saturating_sub(1)).collect();
+    format!("{head}…")
 }
 
 pub fn chip(ui: &mut Ui, text: &str) {
@@ -181,4 +194,16 @@ pub fn progress_bar(ui: &mut Ui, frac: f32, h: f32) {
     let mut fill = rect;
     fill.set_width(rect.width() * frac.clamp(0.0, 1.0));
     ui.painter().rect_filled(fill, r, ACCENT);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::short_version;
+
+    #[test]
+    fn short_version_cuts_only_long_ones() {
+        assert_eq!(short_version("1.2.3", 10), "1.2.3");
+        assert_eq!(short_version("0.2026.09.30.08.29.stable_01", 10), "0.2026.09…");
+        assert_eq!(short_version("0.2026.09.30.08.29.stable_01", 10).chars().count(), 10);
+    }
 }
