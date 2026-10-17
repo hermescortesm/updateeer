@@ -4,7 +4,7 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use crate::local;
+use crate::{local, logos};
 use crate::model::App;
 
 pub struct Icon {
@@ -12,8 +12,12 @@ pub struct Icon {
     pub rgba: Vec<u8>,
 }
 
-/// Command-line tools have no icon.
+/// Apps may have an icon on disk; anything else needs a bundled logo.
 pub fn wants_icon(app: &App) -> bool {
+    local_possible(app) || logos::find(app).is_some()
+}
+
+fn local_possible(app: &App) -> bool {
     cfg!(target_os = "macos") && !app.id.starts_with("formula:")
 }
 
@@ -23,7 +27,15 @@ fn cache_file(id: &str) -> Option<PathBuf> {
     Some(PathBuf::from(home).join("Library/Caches/updateeer/icons").join(format!("{name}.png")))
 }
 
+/// The app's own icon if it is installed, else the bundled logo.
 pub fn load(app: &App) -> Option<Icon> {
+    local_icon(app).or_else(|| decode_bytes(logos::find(app)?))
+}
+
+fn local_icon(app: &App) -> Option<Icon> {
+    if !local_possible(app) {
+        return None;
+    }
     let cache = cache_file(&app.id)?;
     if !cache.exists() {
         let icns = icns_of(&local::bundle(app)?)?;
@@ -43,7 +55,7 @@ pub fn load(app: &App) -> Option<Icon> {
             return None;
         }
     }
-    decode(&cache)
+    decode(std::io::BufReader::new(File::open(cache).ok()?))
 }
 
 /// The icon file named by the bundle's Info.plist (a folder of `.icns` may hold file-type icons too).
@@ -65,8 +77,15 @@ fn icns_of(bundle: &Path) -> Option<PathBuf> {
         .find(|p| p.is_file() && p.extension().is_some_and(|e| e == "icns"))
 }
 
-fn decode(path: &Path) -> Option<Icon> {
-    let mut reader = png::Decoder::new(std::io::BufReader::new(File::open(path).ok()?)).read_info().ok()?;
+pub fn decode_bytes(png: &[u8]) -> Option<Icon> {
+    decode(std::io::Cursor::new(png))
+}
+
+fn decode(src: impl std::io::BufRead + std::io::Seek) -> Option<Icon> {
+    let mut decoder = png::Decoder::new(src);
+    // Palette PNGs (the bundled logos) come out as plain RGB(A).
+    decoder.set_transformations(png::Transformations::EXPAND);
+    let mut reader = decoder.read_info().ok()?;
     let mut buf = vec![0; reader.output_buffer_size()?];
     let info = reader.next_frame(&mut buf).ok()?;
     let px = &buf[..info.buffer_size()];

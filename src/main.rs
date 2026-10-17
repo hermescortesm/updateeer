@@ -1,5 +1,6 @@
 mod icons;
 mod local;
+mod logos;
 mod mas;
 mod model;
 mod pages;
