@@ -1,4 +1,6 @@
-use eframe::egui::{self, Color32, CornerRadius, Stroke};
+use std::sync::Arc;
+
+use eframe::egui::{self, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, Stroke};
 
 pub const BG: Color32 = Color32::from_rgb(0x0D, 0x0E, 0x10);
 pub const PANEL: Color32 = Color32::from_rgb(0x12, 0x13, 0x16);
@@ -12,17 +14,61 @@ pub const TEXT_2: Color32 = Color32::from_rgb(0xC9, 0xCB, 0xD0);
 pub const MUTED: Color32 = Color32::from_rgb(0xA3, 0xA6, 0xAC);
 pub const FAINT: Color32 = Color32::from_rgb(0x8B, 0x8E, 0x95);
 pub const OK: Color32 = Color32::from_rgb(0x8F, 0xE0, 0xB6);
-pub const ERR: Color32 = Color32::from_rgb(0xFF, 0x8A, 0x80);
 pub const LINE: Color32 = Color32::from_rgba_premultiplied(15, 15, 15, 15);
 
+pub fn semibold() -> FontFamily {
+    FontFamily::Name("semibold".into())
+}
+
+/// Bricolage Grotesque, for the title and wordmark.
+pub fn display() -> FontFamily {
+    FontFamily::Name("display".into())
+}
+
+/// Static, Latin-subset builds of the design's fonts (egui cannot use variable fonts).
+fn install_fonts(ctx: &egui::Context) {
+    let mut fonts = FontDefinitions::default();
+    let embedded: [(&str, &[u8]); 4] = [
+        ("geist", include_bytes!("../assets/fonts/Geist-Regular.ttf")),
+        ("geist-semibold", include_bytes!("../assets/fonts/Geist-SemiBold.ttf")),
+        ("geist-mono", include_bytes!("../assets/fonts/GeistMono-Regular.ttf")),
+        ("bricolage", include_bytes!("../assets/fonts/Bricolage-Bold.ttf")),
+    ];
+    for (name, bytes) in embedded {
+        fonts.font_data.insert(name.into(), Arc::new(FontData::from_static(bytes)));
+    }
+    // Fallback for scripts the subset lacks (CJK, accents in app names), read from the OS
+    // at runtime so it costs nothing in the binary.
+    let fallback = ["/System/Library/Fonts/Hiragino Sans GB.ttc", "/System/Library/Fonts/PingFang.ttc", "/System/Library/Fonts/Helvetica.ttc"]
+        .into_iter()
+        .find_map(|p| std::fs::read(p).ok());
+    let has_fallback = fallback.is_some();
+    let chain = |own: &str| {
+        let mut v = vec![own.to_string()];
+        if has_fallback {
+            v.push("os-fallback".into());
+        }
+        v
+    };
+    if let Some(bytes) = fallback {
+        fonts.font_data.insert("os-fallback".into(), Arc::new(FontData::from_owned(bytes)));
+    }
+    fonts.families.insert(FontFamily::Proportional, chain("geist"));
+    fonts.families.insert(FontFamily::Monospace, chain("geist-mono"));
+    fonts.families.insert(semibold(), chain("geist-semibold"));
+    fonts.families.insert(display(), chain("bricolage"));
+    ctx.set_fonts(fonts);
+}
+
 pub fn apply(ctx: &egui::Context) {
+    install_fonts(ctx);
     let mut v = egui::Visuals::dark();
     v.panel_fill = BG;
     v.window_fill = PANEL;
     v.extreme_bg_color = FIELD;
     v.override_text_color = Some(TEXT);
     v.selection.bg_fill = ACCENT;
-    v.selection.stroke = Stroke::new(1.0, ON_ACCENT);
+    v.selection.stroke = Stroke::new(1.0, ACCENT);
     let r = CornerRadius::same(10);
     for w in [
         &mut v.widgets.noninteractive,
@@ -32,6 +78,8 @@ pub fn apply(ctx: &egui::Context) {
     ] {
         w.corner_radius = r;
     }
+    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, LINE);
+    v.widgets.inactive.bg_stroke = Stroke::new(1.0, Color32::from_white_alpha(26));
     v.widgets.inactive.bg_fill = BTN;
     v.widgets.inactive.weak_bg_fill = BTN;
     v.widgets.hovered.weak_bg_fill = Color32::from_rgb(0x22, 0x25, 0x2A);
