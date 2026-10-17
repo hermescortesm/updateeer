@@ -3,6 +3,7 @@ mod queue;
 mod scan;
 mod theme;
 mod ui;
+mod upgrade;
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {

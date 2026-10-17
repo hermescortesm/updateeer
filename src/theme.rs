@@ -12,6 +12,7 @@ pub const TEXT_2: Color32 = Color32::from_rgb(0xC9, 0xCB, 0xD0);
 pub const MUTED: Color32 = Color32::from_rgb(0xA3, 0xA6, 0xAC);
 pub const FAINT: Color32 = Color32::from_rgb(0x8B, 0x8E, 0x95);
 pub const OK: Color32 = Color32::from_rgb(0x8F, 0xE0, 0xB6);
+pub const ERR: Color32 = Color32::from_rgb(0xFF, 0x8A, 0x80);
 pub const LINE: Color32 = Color32::from_rgba_premultiplied(15, 15, 15, 15);
 
 pub fn apply(ctx: &egui::Context) {
