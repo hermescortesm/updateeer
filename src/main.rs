@@ -1,3 +1,4 @@
+mod history;
 mod icons;
 mod local;
 mod logos;

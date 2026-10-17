@@ -10,6 +10,7 @@ use eframe::egui::{
 
 use crate::model::{self, App, Source};
 use crate::queue::{Queue, Status};
+use crate::history::{self, Entry};
 use crate::icons;
 use crate::settings::Settings;
 use crate::{scan, upgrade};
@@ -30,12 +31,6 @@ pub enum Page {
     Settings,
     /// One app's full data; `back` says where it was opened from.
     Detail,
-}
-
-/// One finished upgrade of this session.
-pub struct Entry {
-    pub app: App,
-    pub error: Option<String>,
 }
 
 type Scan = Receiver<Result<scan::Found, String>>;
@@ -129,11 +124,13 @@ impl UpdatesApp {
             installed_rx: None,
             installed_stale: true,
             installed_error: None,
-            history: Vec::new(),
+            history: history::load(),
             detail: None,
             back: Page::Updates,
         };
         app.start_scan();
+        let past: Vec<App> = app.history.iter().map(|e| e.app.clone()).collect();
+        app.request_icons(&past);
         app
     }
 
@@ -247,10 +244,14 @@ impl eframe::App for UpdatesApp {
             let app = self.apps.iter().find(|a| a.id == id);
             match (self.queue.status(&id), app) {
                 (Status::Done, Some(a)) => {
-                    self.history.push(Entry { app: a.clone(), error: None });
+                    self.history.push(Entry { app: a.clone(), error: None, at: SystemTime::now() });
+                    history::save(&self.history);
                     self.installed_stale = true;
                 }
-                (Status::Failed, Some(a)) => self.history.push(Entry { app: a.clone(), error }),
+                (Status::Failed, Some(a)) => {
+                    self.history.push(Entry { app: a.clone(), error, at: SystemTime::now() });
+                    history::save(&self.history);
+                }
                 _ => {}
             }
         }

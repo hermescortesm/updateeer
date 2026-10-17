@@ -92,9 +92,9 @@ impl UpdatesApp {
         let rows: Vec<usize> =
             (0..self.installed.len()).filter(|&i| q.is_empty() || self.installed[i].name.to_lowercase().contains(&q)).collect();
         let sub = if loading && self.installed.is_empty() {
-            "Leyendo Homebrew…".to_string()
+            "Leyendo tus apps…".to_string()
         } else {
-            format!("{} apps de Homebrew", self.installed.len())
+            format!("{} apps instaladas", self.installed.len())
         };
         header(ui, "Instaladas", &sub);
         ui.horizontal(|ui| ui.with_layout(Layout::right_to_left(Align::Center), |ui| search_field(ui, &mut self.query)));
@@ -106,7 +106,7 @@ impl UpdatesApp {
                 let msg = match (&self.installed_error, loading) {
                     (Some(e), _) => format!("No se pudo leer: {e}"),
                     (_, true) => "Cargando…".into(),
-                    _ if self.installed.is_empty() => "No hay apps instaladas con Homebrew.".into(),
+                    _ if self.installed.is_empty() => "No se encontraron apps instaladas.".into(),
                     _ => "Ninguna app coincide con tu búsqueda.".into(),
                 };
                 empty(ui, &msg);
@@ -176,6 +176,7 @@ impl UpdatesApp {
         let kind_label = match kind {
             "cask" => "app (cask)",
             "mas" => "app de la tienda",
+            "direct" => "descarga directa",
             "formula" => "fórmula",
             _ => "paquete",
         };
@@ -227,7 +228,7 @@ impl UpdatesApp {
 
     pub(crate) fn history_page(&mut self, ui: &mut Ui) {
         let n = self.history.len();
-        let sub = if n == 0 { "Nada todavía en esta sesión".to_string() } else { format!("{n} en esta sesión") };
+        let sub = if n == 0 { "Todavía no has actualizado nada".to_string() } else { format!("{n} actualizaciones registradas") };
         header(ui, "Historial", &sub);
         card(ui, |ui| {
             ui.set_height(ui.available_height());
@@ -243,7 +244,10 @@ impl UpdatesApp {
                     ui.push_id(k, |ui| {
                         let (rect, left, right) = list_row(ui);
                         name_cell(ui, rect, left, app, self.icons.get(&app.id));
-                        cell(ui, rect, left + 290.0, right - 160.0, Layout::left_to_right(Align::Center), |ui| {
+                        cell(ui, rect, right - 290.0, right - 160.0, Layout::right_to_left(Align::Center), |ui| {
+                            ui.label(RichText::new(model::date(entry.at)).monospace().size(12.5).color(FAINT));
+                        });
+                        cell(ui, rect, left + 290.0, right - 300.0, Layout::left_to_right(Align::Center), |ui| {
                             ui.spacing_mut().item_spacing.x = 8.0;
                             ui.label(RichText::new(&app.from).monospace().size(13.0).color(FAINT));
                             let (r, _) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());

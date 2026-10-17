@@ -136,7 +136,16 @@ fn scan_brew() -> Result<Vec<App>, String> {
 pub fn installed() -> Result<Found, String> {
     let brew_result = brew_path().map(|_| installed_brew());
     let mas_result = mas::path().map(|_| mas::installed());
-    merge(brew_result, mas_result)
+    let (mut apps, warning) = match merge(brew_result, mas_result) {
+        Ok(found) => found,
+        Err(e) => (Vec::new(), Some(e)),
+    };
+    apps.extend(local::direct_apps(&apps));
+    if apps.is_empty() {
+        return Err(warning.unwrap_or_else(|| "No se encontraron apps".into()));
+    }
+    apps.sort_by_key(|a| a.name.to_lowercase());
+    Ok((apps, warning))
 }
 
 fn installed_brew() -> Result<Vec<App>, String> {
