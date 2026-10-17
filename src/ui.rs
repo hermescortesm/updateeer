@@ -12,6 +12,8 @@ use crate::model::{self, App, Source};
 use crate::queue::{Queue, Status};
 use crate::history::{self, Entry};
 use crate::native;
+use crate::notify::{Notifier, Reply};
+use crate::running::{self, State};
 use crate::setup;
 use crate::tray::{self, Tray};
 use crate::autostart;
@@ -98,6 +100,13 @@ pub struct UpdatesApp {
     pub(crate) history: Vec<Entry>,
     tray: Option<Tray>,
     quitting: bool,
+    notifier: Notifier,
+    notify_rx: Receiver<Reply>,
+    /// Apps we already asked about (or were told "later" for): no new question before this time.
+    snooze: HashMap<String, Instant>,
+    /// "Update now" answers that arrived while a scan was replacing the queue.
+    update_after_scan: Vec<String>,
+    last_auto: Instant,
     /// (Homebrew found, mas found).
     tools: (bool, bool),
     mas_install: Option<Receiver<Result<(), String>>>,
@@ -117,6 +126,7 @@ impl UpdatesApp {
     pub fn new(ctx: egui::Context, start_hidden: bool) -> Self {
         let (done_tx, done_rx) = mpsc::channel();
         let (icon_tx, icon_rx) = mpsc::channel();
+        let (notifier, notify_rx) = Notifier::new(&ctx);
         let mut app = Self {
             apps: Vec::new(),
             selected: HashSet::new(),
@@ -146,6 +156,11 @@ impl UpdatesApp {
             history: history::load(),
             tray: None,
             quitting: false,
+            notifier,
+            notify_rx,
+            snooze: HashMap::new(),
+            update_after_scan: Vec::new(),
+            last_auto: Instant::now(),
             tools: detect_tools(),
             mas_install: None,
             setup_error: None,
@@ -184,6 +199,58 @@ impl UpdatesApp {
         self.scan_warning = None;
     }
 
+    /// Auto-update: apps that are not running update on their own, open ones get a notification
+    /// asking for "now" or "later". Off unless the user turned it on.
+    fn auto_pass(&mut self) {
+        self.last_auto = Instant::now();
+        if !self.settings.auto_update || self.scanning() {
+            return;
+        }
+        let procs = running::processes();
+        let now = Instant::now();
+        let mut idle = Vec::new();
+        let mut ask = Vec::new();
+        for app in self.apps.iter().filter(|a| self.queue.status(&a.id) == Status::Available) {
+            match running::state(app, &procs) {
+                State::Idle => idle.push(app.id.clone()),
+                State::InUse | State::Unknown => {
+                    if self.snooze.get(&app.id).is_none_or(|t| now >= *t) {
+                        ask.push(app.clone());
+                    }
+                }
+            }
+        }
+        // One question for all the open apps; ask again tomorrow at most, unless the answer says otherwise.
+        for app in &ask {
+            self.snooze.insert(app.id.clone(), now + Duration::from_secs(24 * 3600));
+        }
+        self.notifier.ask(&ask);
+        self.queue.enqueue(idle.iter().map(String::as_str));
+    }
+
+    fn poll_notify(&mut self) {
+        while let Ok(reply) = self.notify_rx.try_recv() {
+            match reply {
+                Reply::UpdateNow(ids) => {
+                    for id in ids {
+                        self.snooze.remove(&id);
+                        if self.scanning() {
+                            self.update_after_scan.push(id);
+                        } else if matches!(self.queue.status(&id), Status::Available | Status::Failed) {
+                            self.queue.enqueue([id.as_str()]);
+                        }
+                    }
+                }
+                Reply::Later(ids) => {
+                    for id in ids {
+                        self.snooze.insert(id, Instant::now() + Duration::from_secs(4 * 3600));
+                    }
+                }
+                Reply::Open => native::set_hidden(false),
+            }
+        }
+    }
+
     fn poll_scan(&mut self) {
         let Some(rx) = &self.scan_rx else { return };
         let Ok(result) = rx.try_recv() else { return };
@@ -195,6 +262,9 @@ impl UpdatesApp {
                 self.queue = Queue::new(apps.iter().map(|a| a.id.clone()), CONCURRENCY);
                 self.apps = apps;
                 self.selected.clear();
+                let pending = std::mem::take(&mut self.update_after_scan);
+                self.queue.enqueue(pending.iter().map(String::as_str));
+                self.auto_pass();
             }
             Err(e) => self.scan_error = Some(e),
         }
@@ -281,6 +351,7 @@ impl eframe::App for UpdatesApp {
         }
         self.was_focused = focused;
         self.poll_mas_install();
+        self.poll_notify();
         self.poll_scan();
         self.poll_icons();
         while let Ok((id, result)) = self.done_rx.try_recv() {
@@ -301,8 +372,11 @@ impl eframe::App for UpdatesApp {
                 _ => {}
             }
         }
-        if self.settings.auto {
-            if self.last_scan.elapsed() >= Duration::from_secs(self.settings.hours as u64 * 3600) {
+        if self.settings.auto_update && self.last_auto.elapsed() >= Duration::from_secs(60) {
+            self.auto_pass();
+        }
+        if self.settings.auto || self.settings.auto_update {
+            if self.settings.auto && self.last_scan.elapsed() >= Duration::from_secs(self.settings.hours as u64 * 3600) {
                 self.start_scan();
             }
             ui.request_repaint_after(Duration::from_secs(60));
