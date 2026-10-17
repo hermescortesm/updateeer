@@ -1,14 +1,17 @@
+mod autostart;
 mod history;
 mod icons;
 mod local;
 mod logos;
 mod mas;
 mod model;
+mod native;
 mod pages;
 mod queue;
 mod scan;
 mod settings;
 mod theme;
+mod tray;
 mod ui;
 mod upgrade;
 mod widgets;
@@ -19,9 +22,24 @@ fn app_icon() -> eframe::egui::IconData {
     eframe::egui::IconData { rgba: icon.rgba, width: icon.size[0] as u32, height: icon.size[1] as u32 }
 }
 
+/// One instance only: a second launch (e.g. after "open at login") just exits.
+fn single_instance() -> Option<std::fs::File> {
+    let dir = settings::config_dir()?;
+    std::fs::create_dir_all(&dir).ok()?;
+    let file = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(dir.join("lock")).ok()?;
+    match file.try_lock() {
+        Err(std::fs::TryLockError::WouldBlock) => std::process::exit(0),
+        _ => Some(file),
+    }
+}
+
 fn main() -> eframe::Result {
+    let _lock = single_instance();
+    // Started by "open at login": stay in the menu bar until the user opens the window.
+    let background = std::env::args().any(|a| a == "--background");
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
+            .with_visible(!background)
             .with_title("Updateeer")
             .with_icon(app_icon())
             .with_inner_size([1200.0, 780.0])
@@ -31,9 +49,9 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Updateeer",
         options,
-        Box::new(|cc| {
+        Box::new(move |cc| {
             theme::install(&cc.egui_ctx);
-            Ok(Box::new(ui::UpdatesApp::new(cc.egui_ctx.clone())))
+            Ok(Box::new(ui::UpdatesApp::new(cc.egui_ctx.clone(), background)))
         }),
     )
 }

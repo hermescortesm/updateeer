@@ -11,6 +11,9 @@ use eframe::egui::{
 use crate::model::{self, App, Source};
 use crate::queue::{Queue, Status};
 use crate::history::{self, Entry};
+use crate::native;
+use crate::tray::{self, Tray};
+use crate::autostart;
 use crate::icons;
 use crate::settings::{Settings, ThemeMode};
 use crate::{scan, upgrade};
@@ -88,6 +91,12 @@ pub struct UpdatesApp {
     pub(crate) installed_stale: bool,
     pub(crate) installed_error: Option<String>,
     pub(crate) history: Vec<Entry>,
+    tray: Option<Tray>,
+    quitting: bool,
+    /// Frames left before hiding the window (started with `--background`).
+    hide_in: Option<u8>,
+    pub(crate) login: bool,
+    pub(crate) login_error: Option<String>,
     pub(crate) detail: Option<App>,
     pub(crate) back: Page,
 }
@@ -95,7 +104,7 @@ pub struct UpdatesApp {
 const CONCURRENCY: usize = 2;
 
 impl UpdatesApp {
-    pub fn new(ctx: egui::Context) -> Self {
+    pub fn new(ctx: egui::Context, start_hidden: bool) -> Self {
         let (done_tx, done_rx) = mpsc::channel();
         let (icon_tx, icon_rx) = mpsc::channel();
         let mut app = Self {
@@ -125,9 +134,15 @@ impl UpdatesApp {
             installed_stale: true,
             installed_error: None,
             history: history::load(),
+            tray: None,
+            quitting: false,
+            hide_in: start_hidden.then_some(3),
+            login: autostart::enabled(),
+            login_error: None,
             detail: None,
             back: Page::Updates,
         };
+        app.tray = Tray::new(&app.ctx, app.login);
         app.start_scan();
         let past: Vec<App> = app.history.iter().map(|e| e.app.clone()).collect();
         app.request_icons(&past);
@@ -243,6 +258,7 @@ impl eframe::App for UpdatesApp {
         if light != theme::is_light() {
             theme::apply(&self.ctx, light);
         }
+        self.menu_bar();
         self.poll_scan();
         self.poll_icons();
         while let Ok((id, result)) = self.done_rx.try_recv() {
@@ -299,6 +315,57 @@ impl eframe::App for UpdatesApp {
 }
 
 impl UpdatesApp {
+    /// Menu bar icon: closing the window hides it instead of quitting; the menu drives the rest.
+    fn menu_bar(&mut self) {
+        let ctx = self.ctx.clone();
+        let Some(tray) = self.tray.as_mut() else { return };
+        // eframe shows the window after its first frames; hide it once that is done.
+        if let Some(n) = self.hide_in {
+            self.hide_in = n.checked_sub(1);
+            if n == 0 {
+                native::set_hidden(true);
+            } else {
+                ctx.request_repaint();
+            }
+        }
+        if ctx.input(|i| i.viewport().close_requested()) && !self.quitting {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            native::set_hidden(true);
+        }
+        tray.update(self.queue.available_count(), self.scan_rx.is_some());
+        let mut actions = Vec::new();
+        while let Ok(a) = tray.rx.try_recv() {
+            actions.push(a);
+        }
+        for action in actions {
+            match action {
+                tray::Action::Open => {
+                    native::set_hidden(false);
+                }
+                tray::Action::Scan => self.start_scan(),
+                tray::Action::Login => self.set_login(!self.login),
+                tray::Action::Quit => {
+                    self.quitting = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
+        }
+    }
+
+    /// Turns "open at login" on or off, keeping the menu check and the setting in step.
+    pub(crate) fn set_login(&mut self, on: bool) {
+        match autostart::set(on) {
+            Ok(()) => {
+                self.login = on;
+                self.login_error = None;
+            }
+            Err(e) => self.login_error = Some(e),
+        }
+        if let Some(t) = &self.tray {
+            t.set_login(self.login);
+        }
+    }
+
     fn sidebar(&mut self, ui: &mut Ui) {
         ui.add_space(10.0);
         ui.horizontal(|ui| {
