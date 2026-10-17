@@ -5,15 +5,41 @@ use serde_json::{Value, json};
 
 pub const HOURS: [u32; 4] = [1, 6, 12, 24];
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ThemeMode {
+    System,
+    Light,
+    Dark,
+}
+
+impl ThemeMode {
+    fn name(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::Light => "light",
+            Self::Dark => "dark",
+        }
+    }
+
+    fn from_name(s: &str) -> Self {
+        match s {
+            "light" => Self::Light,
+            "dark" => Self::Dark,
+            _ => Self::System,
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Settings {
     pub auto: bool,
     pub hours: u32,
+    pub theme: ThemeMode,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { auto: true, hours: 6 }
+        Self { auto: true, hours: 6, theme: ThemeMode::System }
     }
 }
 
@@ -35,6 +61,7 @@ impl Settings {
         let d = Self::default();
         Self {
             auto: v["auto"].as_bool().unwrap_or(d.auto),
+            theme: v["theme"].as_str().map_or(d.theme, ThemeMode::from_name),
             hours: v["hours"].as_u64().map(|h| h as u32).filter(|h| HOURS.contains(h)).unwrap_or(d.hours),
         }
     }
@@ -45,7 +72,7 @@ impl Settings {
         if let Some(dir) = p.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        let _ = std::fs::write(p, json!({ "auto": self.auto, "hours": self.hours }).to_string());
+        let _ = std::fs::write(p, json!({ "auto": self.auto, "hours": self.hours, "theme": self.theme.name() }).to_string());
     }
 }
 
@@ -55,7 +82,7 @@ mod tests {
 
     #[test]
     fn parse_validates_and_defaults() {
-        assert_eq!(Settings::parse(r#"{"auto":false,"hours":12}"#), Settings { auto: false, hours: 12 });
+        assert_eq!(Settings::parse(r#"{"auto":false,"hours":12,"theme":"light"}"#), Settings { auto: false, hours: 12, theme: ThemeMode::Light });
         assert_eq!(Settings::parse(r#"{"hours":7}"#), Settings::default());
         assert_eq!(Settings::parse("garbage"), Settings::default());
     }
