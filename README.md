@@ -61,7 +61,7 @@ Packaging scripts: `tools/package-macos.sh <target>` (needs `pip install dmgbuil
 
 ## Privacy
 
-Updateeer talks only to your local package managers. It has no account, no telemetry and no network code of its own.
+Updateeer talks to your local package managers. The only connection it makes on its own is one request to the GitHub releases API (through `curl`) to tell you when a newer Updateeer exists; you can turn it off in Settings. It has no account and no telemetry.
 
 ## Author
 

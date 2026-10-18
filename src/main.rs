@@ -17,6 +17,7 @@ mod permissions;
 mod queue;
 mod running;
 mod scan;
+mod selfupdate;
 mod settings;
 mod setup;
 mod theme;
