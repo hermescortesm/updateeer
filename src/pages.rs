@@ -512,6 +512,7 @@ impl UpdatesApp {
         let before = self.settings;
         let mut want_login = None;
         let mut want_welcome = false;
+        let mut install_now = false;
         card(ui, |ui| {
             setting_row(ui, "Búsqueda automática", "Busca actualizaciones sola mientras la app esté abierta.", |ui| {
                 widgets::toggle(ui, &mut self.settings.auto);
@@ -567,15 +568,24 @@ impl UpdatesApp {
                     want_welcome = widgets::button(ui, None, "Revisar", Kind::Soft, 34.0, true).clicked();
                 });
             }
-            let version_note = match &self.new_release {
-                Some(r) => format!("Hay una versión nueva: {}", r.version),
-                None => "Updateeer".to_string(),
+            let can_install = crate::selfupdate::can_self_install();
+            let installing = self.self_update_rx.is_some();
+            let version_note = match (&self.new_release, &self.self_update_error) {
+                (_, Some(e)) => format!("No se pudo actualizar: {e}"),
+                (Some(_), _) if installing => "Descargando e instalando… se te pedirá la contraseña".to_string(),
+                (Some(r), _) => format!("Hay una versión nueva: {}", r.version),
+                _ => "Updateeer".to_string(),
             };
             setting_row(ui, "Versión", &version_note, |ui| {
-                if let Some(r) = &self.new_release
-                    && widgets::button(ui, Some(Icon::Download), "Descargar", Kind::Primary, 34.0, true).clicked()
-                {
-                    crate::selfupdate::open(&r.url);
+                if let Some(r) = &self.new_release {
+                    let label = if can_install { "Instalar y reiniciar" } else { "Descargar" };
+                    if widgets::button(ui, Some(Icon::Download), label, Kind::Primary, 34.0, !installing).clicked() {
+                        if can_install {
+                            install_now = true;
+                        } else {
+                            crate::selfupdate::open(&r.url);
+                        }
+                    }
                 }
                 ui.label(RichText::new(env!("CARGO_PKG_VERSION")).monospace().size(13.0).color(text_2()));
             });
@@ -602,6 +612,9 @@ impl UpdatesApp {
             value_row(ui, "Licencia", "MIT — gratis para usar, copiar y modificar");
             value_row(ui, "Código fuente", "github.com/hermescortesm/updateeer");
         });
+        if install_now {
+            self.start_self_update();
+        }
         if want_welcome {
             self.access = crate::permissions::app_management();
             self.page = Page::Welcome;

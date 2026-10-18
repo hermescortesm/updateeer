@@ -116,6 +116,9 @@ pub struct UpdatesApp {
     /// A newer Updateeer on GitHub, once found; and the check in flight.
     pub(crate) new_release: Option<crate::selfupdate::Release>,
     release_rx: Option<Receiver<Result<crate::selfupdate::Release, String>>>,
+    /// Updateeer replacing itself with the new package (Linux).
+    pub(crate) self_update_rx: Option<Receiver<Result<(), String>>>,
+    pub(crate) self_update_error: Option<String>,
     pub(crate) page: Page,
     pub(crate) settings: Settings,
     pub(crate) installed: Vec<App>,
@@ -177,6 +180,8 @@ impl UpdatesApp {
             last_scan: Instant::now(),
             new_release: None,
             release_rx: None,
+            self_update_rx: None,
+            self_update_error: None,
             page: if cfg!(target_os = "macos") && !settings.onboarded { Page::Welcome } else { Page::Updates },
             settings,
             installed: Vec::new(),
@@ -227,6 +232,30 @@ impl UpdatesApp {
             ctx.request_repaint();
         });
         self.release_rx = Some(tx.1);
+    }
+
+    /// Downloads, verifies and installs the new package, then the new version takes over.
+    pub(crate) fn start_self_update(&mut self) {
+        let Some(release) = self.new_release.clone().filter(|_| self.self_update_rx.is_none()) else { return };
+        self.self_update_error = None;
+        let (tx, ctx) = (mpsc::channel(), self.ctx.clone());
+        let sender = tx.0;
+        thread::spawn(move || {
+            let _ = sender.send(crate::selfupdate::install(&release));
+            ctx.request_repaint();
+        });
+        self.self_update_rx = Some(tx.1);
+    }
+
+    fn poll_self_update(&mut self) {
+        let Some(rx) = &self.self_update_rx else { return };
+        let Ok(result) = rx.try_recv() else { return };
+        self.self_update_rx = None;
+        match result {
+            // The new version is already running; this old one just leaves.
+            Ok(()) => std::process::exit(0),
+            Err(e) => self.self_update_error = Some(e),
+        }
     }
 
     fn poll_release(&mut self) {
@@ -411,6 +440,7 @@ impl eframe::App for UpdatesApp {
         self.poll_notify();
         self.poll_scan();
         self.poll_release();
+        self.poll_self_update();
         self.poll_icons();
         while let Ok((id, result)) = self.done_rx.try_recv() {
             let error = result.as_ref().err().cloned();
@@ -571,8 +601,14 @@ impl UpdatesApp {
                     ui.add_space(6.0);
                     ui.add(egui::Label::new(RichText::new(format!("Nueva versión {} disponible", r.version)).size(12.5).family(semibold()).color(accent_text())).sense(Sense::click()))
                 });
-                if link.inner.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("Abrir la página de descarga").clicked() {
-                    crate::selfupdate::open(&r.url);
+                let can_install = crate::selfupdate::can_self_install();
+                let hint = if can_install { "Ver en Ajustes" } else { "Abrir la página de descarga" };
+                if link.inner.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(hint).clicked() {
+                    if can_install {
+                        self.page = Page::Settings;
+                    } else {
+                        crate::selfupdate::open(&r.url);
+                    }
                 }
             }
         });
