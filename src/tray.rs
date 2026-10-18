@@ -1,4 +1,5 @@
 //! Menu bar icon with the update count, and the actions of its menu.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub enum Action {
     Open,
     Scan,

@@ -3,6 +3,7 @@
 mod autostart;
 mod history;
 mod icons;
+mod linuxpkg;
 mod local;
 mod logos;
 mod mas;
@@ -47,6 +48,7 @@ fn main() -> eframe::Result {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_visible(!background)
             .with_title("Updateeer")
+            .with_app_id("updateeer")
             .with_icon(app_icon())
             .with_inner_size([1200.0, 780.0])
             .with_min_inner_size([1180.0, 640.0]),
