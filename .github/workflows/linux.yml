@@ -105,5 +105,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.release || github.ref_name }}
         run: |
+          git config --global --add safe.directory "$PWD"
           gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "Updateeer $GITHUB_REF_NAME" --notes "See the assets below."
           gh release upload "$TAG" dist/*.rpm --clobber
