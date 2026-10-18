@@ -79,43 +79,142 @@ fn expected_sha(asset: &Asset, notes: &str) -> Option<String> {
     })
 }
 
-/// Whether this copy was installed from a system package, so a new package can replace it.
+/// The `.app` folder this copy runs from (macOS).
+fn app_bundle() -> Option<PathBuf> {
+    std::env::current_exe().ok()?.ancestors().find(|p| p.extension().is_some_and(|e| e == "app")).map(Path::to_path_buf)
+}
+
+/// Whether this copy is an installed one that a new package can replace: a system package under
+/// `/usr/bin` (Linux), a bundle in a writable folder (macOS) or the MSI install (Windows).
 pub fn can_self_install() -> bool {
-    cfg!(target_os = "linux") && std::env::consts::ARCH == "x86_64" && std::env::current_exe().is_ok_and(|p| p.starts_with("/usr/bin"))
+    let exe = std::env::current_exe().unwrap_or_default();
+    if cfg!(target_os = "linux") {
+        std::env::consts::ARCH == "x86_64" && exe.starts_with("/usr/bin")
+    } else if cfg!(target_os = "macos") {
+        app_bundle().and_then(|b| b.parent().map(Path::to_path_buf)).is_some_and(|dir| {
+            let probe = dir.join(".updateeer-write-check");
+            let ok = std::fs::write(&probe, b"").is_ok();
+            let _ = std::fs::remove_file(probe);
+            ok
+        })
+    } else {
+        std::env::consts::ARCH == "x86_64" && std::env::var_os("ProgramFiles").is_some_and(|pf| exe.starts_with(pf))
+    }
 }
 
-/// Downloads the package for this system, checks its SHA-256, installs it as administrator and
-/// starts the new version. Blocks, so call it from a worker thread.
+/// Suffix of the release file for this system, and the Linux package manager that installs it.
+fn wanted_file() -> Result<(String, &'static str), String> {
+    if cfg!(target_os = "macos") {
+        let arch = if std::env::consts::ARCH == "aarch64" { "arm64" } else { "x86_64" };
+        Ok((format!("macos-{arch}.dmg"), ""))
+    } else if cfg!(windows) {
+        Ok(("windows-x64.msi".into(), ""))
+    } else {
+        let (manager, suffix) = package_kind(|k| crate::linuxpkg::path(k).is_some()).ok_or("No se encontró apt, pacman ni dnf")?;
+        Ok((suffix.to_string(), manager))
+    }
+}
+
+/// Downloads the installer for this system, checks its SHA-256, installs it and starts the new
+/// version; the caller then exits the old one. Blocks, so call it from a worker thread.
 pub fn install(release: &Release) -> Result<(), String> {
-    let (manager, suffix) = package_kind(|k| crate::linuxpkg::path(k).is_some()).ok_or("No se encontró apt, pacman ni dnf")?;
-    let asset = release
-        .assets
-        .iter()
-        .find(|a| a.name.ends_with(suffix) && a.name.contains("linux-"))
-        .ok_or("Esta versión no trae un paquete para tu sistema")?;
-    let want = expected_sha(asset, &release.notes).ok_or("La versión no publica una suma SHA-256 para verificar el paquete")?;
+    let (suffix, manager) = wanted_file()?;
+    let asset = release.assets.iter().find(|a| a.name.ends_with(&suffix)).ok_or("Esta versión no trae un instalador para tu sistema")?;
+    let want = expected_sha(asset, &release.notes).ok_or("La versión no publica una suma SHA-256 para verificar el instalador")?;
     let dir = std::env::temp_dir().join(format!("updateeer-update-{}", std::process::id()));
-    let result = download_and_install(manager, asset, &want, &dir);
-    let _ = std::fs::remove_dir_all(&dir);
-    result?;
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    Command::new(exe).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().map_err(|e| e.to_string())?;
-    Ok(())
+    let file = download(asset, &want, &dir)?;
+    // On Windows the installer outlives this process, so its folder is left in place.
+    let result = if cfg!(target_os = "macos") {
+        replace_bundle(&file, &dir)
+    } else if cfg!(windows) {
+        run_msi(&file)
+    } else {
+        crate::linuxpkg::install_file(manager, file.to_str().ok_or("Ruta no válida")?).and_then(|_| relaunch())
+    };
+    if !cfg!(windows) {
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    result
 }
 
-fn download_and_install(manager: &str, asset: &Asset, want: &str, dir: &Path) -> Result<(), String> {
+fn download(asset: &Asset, want: &str, dir: &Path) -> Result<PathBuf, String> {
+    let _ = std::fs::remove_dir_all(dir);
     #[cfg(unix)]
     std::os::unix::fs::DirBuilderExt::mode(std::fs::DirBuilder::new().recursive(true), 0o700).create(dir).map_err(|e| e.to_string())?;
     #[cfg(not(unix))]
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    let file: PathBuf = dir.join(&asset.name);
+    let file = dir.join(&asset.name);
     let file_str = file.to_str().ok_or("Ruta no válida")?;
     scan::run(Command::new("curl"), &["-fL", "--proto", "=https", "--max-time", "600", "-o", file_str, &asset.url], Duration::from_secs(620))?;
-    let sum = scan::run(Command::new("sha256sum"), &[file_str], Duration::from_secs(60))?;
-    if sum.split_whitespace().next().map(str::to_lowercase).as_deref() != Some(want) {
-        return Err("La suma SHA-256 del paquete no coincide; no se instaló".into());
+    if sha256(file_str)? != want {
+        return Err("La suma SHA-256 del instalador no coincide; no se instaló".into());
     }
-    crate::linuxpkg::install_file(manager, file_str)
+    Ok(file)
+}
+
+/// Lowercase hex SHA-256 of a file, from the tool every OS already ships.
+fn sha256(file: &str) -> Result<String, String> {
+    let t = Duration::from_secs(60);
+    let hex = if cfg!(windows) {
+        let out = scan::run(Command::new("certutil"), &["-hashfile", file, "SHA256"], t)?;
+        out.lines().nth(1).unwrap_or("").split_whitespace().collect::<String>()
+    } else if cfg!(target_os = "macos") {
+        scan::run(Command::new("/usr/bin/shasum"), &["-a", "256", file], t)?.split_whitespace().next().unwrap_or("").to_string()
+    } else {
+        scan::run(Command::new("sha256sum"), &[file], t)?.split_whitespace().next().unwrap_or("").to_string()
+    };
+    Ok(hex.to_lowercase())
+}
+
+fn spawn_detached(cmd: &mut Command) -> Result<(), String> {
+    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    #[cfg(windows)]
+    std::os::windows::process::CommandExt::creation_flags(cmd, 0x0800_0000);
+    cmd.spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
+fn relaunch() -> Result<(), String> {
+    spawn_detached(&mut Command::new(std::env::current_exe().map_err(|e| e.to_string())?))
+}
+
+/// macOS: mounts the dmg, swaps the running bundle for the new one and opens it.
+fn replace_bundle(dmg: &Path, dir: &Path) -> Result<(), String> {
+    let bundle = app_bundle().ok_or("No se encontró la app instalada")?;
+    swap_from_dmg(dmg, &dir.join("mnt"), &bundle)?;
+    spawn_detached(Command::new("/usr/bin/open").arg("-n").arg(&bundle))
+}
+
+fn swap_from_dmg(dmg: &Path, mount: &Path, bundle: &Path) -> Result<(), String> {
+    let (dmg_s, mount_s) = (dmg.to_str().ok_or("Ruta no válida")?, mount.to_str().ok_or("Ruta no válida")?);
+    std::fs::create_dir_all(mount).map_err(|e| e.to_string())?;
+    let t = Duration::from_secs(120);
+    scan::run(Command::new("/usr/bin/hdiutil"), &["attach", "-nobrowse", "-readonly", "-noverify", "-mountpoint", mount_s, dmg_s], t)?;
+    let result = (|| {
+        let parent = bundle.parent().ok_or("Ruta no válida")?;
+        let (new, old) = (parent.join(".Updateeer-new.app"), parent.join(".Updateeer-old.app"));
+        let _ = std::fs::remove_dir_all(&new);
+        let _ = std::fs::remove_dir_all(&old);
+        // `ditto` keeps the signature, permissions and extended attributes of the bundle.
+        scan::run(Command::new("/usr/bin/ditto"), &[mount.join("Updateeer.app").to_str().ok_or("Ruta no válida")?, new.to_str().ok_or("Ruta no válida")?], t)?;
+        std::fs::rename(bundle, &old).map_err(|e| format!("No se pudo reemplazar la app: {e}"))?;
+        if let Err(e) = std::fs::rename(&new, bundle) {
+            let _ = std::fs::rename(&old, bundle);
+            return Err(format!("No se pudo reemplazar la app: {e}"));
+        }
+        let _ = std::fs::remove_dir_all(&old);
+        Ok(())
+    })();
+    let _ = scan::run(Command::new("/usr/bin/hdiutil"), &["detach", "-force", mount_s], t);
+    result
+}
+
+/// Windows: the installer needs this app closed, so a PowerShell helper waits for it, runs the
+/// MSI (Windows asks for permission) and opens the new version.
+fn run_msi(msi: &Path) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let q = |p: &Path| p.display().to_string().replace('\'', "''");
+    let script = format!("Start-Sleep -Seconds 2; Start-Process msiexec -ArgumentList '/i','\"{}\"','/passive','/norestart' -Wait; Start-Process '{}'", q(msi), q(&exe));
+    spawn_detached(Command::new("powershell").args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &script]))
 }
 
 fn parts(v: &str) -> Option<Vec<u64>> {
@@ -178,5 +277,27 @@ mod tests {
         let plain = Asset { name: "p.rpm".into(), url: String::new(), sha256: None };
         assert_eq!(expected_sha(&plain, &format!("```\n{hex}  p.rpm\n```")), Some(hex));
         assert_eq!(expected_sha(&plain, "nothing here"), None);
+    }
+
+    /// Needs a real dmg: `UPDATEEER_TEST_DMG=dist/Updateeer-x.dmg cargo test swaps_a_bundle -- --ignored`.
+    #[test]
+    #[ignore]
+    fn swaps_a_bundle() {
+        let dmg = PathBuf::from(std::env::var("UPDATEEER_TEST_DMG").unwrap()).canonicalize().unwrap();
+        let root = std::env::temp_dir().join("updateeer-swap-test");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("Updateeer.app/Contents")).unwrap();
+        std::fs::write(root.join("Updateeer.app/Contents/old.txt"), "old").unwrap();
+        swap_from_dmg(&dmg, &root.join("mnt"), &root.join("Updateeer.app")).unwrap();
+        assert!(root.join("Updateeer.app/Contents/MacOS/updateeer").is_file());
+        assert!(!root.join("Updateeer.app/Contents/old.txt").exists());
+        assert!(!root.join(".Updateeer-old.app").exists());
+    }
+
+    #[test]
+    fn hashes_a_file_with_the_system_tool() {
+        let f = std::env::temp_dir().join("updateeer-sha-test");
+        std::fs::write(&f, "abc").unwrap();
+        assert_eq!(sha256(f.to_str().unwrap()).unwrap(), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
     }
 }
