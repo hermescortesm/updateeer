@@ -1,0 +1,75 @@
+name: Linux
+
+on:
+  push:
+    branches: [dev]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  deb:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test
+        run: cargo test --release --locked
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Build the .deb
+        run: |
+          tools/package-deb.sh
+          sha256sum dist/*.deb
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-deb
+          path: dist/*.deb
+
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --title "Updateeer $GITHUB_REF_NAME" --notes "See the assets below."
+          gh release upload "$GITHUB_REF_NAME" dist/*.deb --clobber
+
+  arch:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - name: Tools
+        run: pacman -Syu --noconfirm base-devel git rust sudo github-cli
+
+      - uses: actions/checkout@v4
+
+      - name: Build the package
+        run: |
+          git config --global --add safe.directory "$PWD"
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          useradd -m builder
+          mkdir -p /build dist
+          git archive --prefix="updateeer-$version/" -o "/build/updateeer-$version.tar.gz" HEAD
+          cp packaging/arch/PKGBUILD /build/
+          chown -R builder /build
+          su builder -c "cd /build && UPDATEEER_VERSION=$version makepkg --noconfirm -f"
+          for f in /build/*.pkg.tar.zst; do cp "$f" "dist/Updateeer-$version-linux-$(uname -m).pkg.tar.zst"; done
+          sha256sum dist/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-arch
+          path: dist/*.pkg.tar.zst
+
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --title "Updateeer $GITHUB_REF_NAME" --notes "See the assets below."
+          gh release upload "$GITHUB_REF_NAME" dist/*.pkg.tar.zst --clobber

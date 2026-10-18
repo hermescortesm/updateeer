@@ -69,6 +69,15 @@ enum Sort {
 fn source_filters() -> Vec<(&'static str, Filter)> {
     if cfg!(windows) {
         vec![("Todas", Filter::All), ("winget", Filter::Only(Source::Winget)), ("Scoop", Filter::Only(Source::Scoop)), ("Chocolatey", Filter::Only(Source::Chocolatey))]
+    } else if cfg!(target_os = "linux") {
+        vec![
+            ("Todas", Filter::All),
+            ("apt", Filter::Only(Source::Apt)),
+            ("pacman", Filter::Only(Source::Pacman)),
+            ("dnf", Filter::Only(Source::Dnf)),
+            ("Flatpak", Filter::Only(Source::Flatpak)),
+            ("Snap", Filter::Only(Source::Snap)),
+        ]
     } else {
         vec![("Todas", Filter::All), ("App Store", Filter::Only(Source::AppStore)), ("Homebrew", Filter::Only(Source::Homebrew)), ("Directas", Filter::Only(Source::Direct))]
     }
@@ -312,7 +321,7 @@ impl UpdatesApp {
         let mut rows: Vec<usize> = (0..self.apps.len())
             .filter(|&i| {
                 let a = &self.apps[i];
-                let tool = a.id.starts_with("formula:");
+                let tool = a.id.starts_with("formula:") || matches!(a.source, Source::Apt | Source::Pacman | Source::Dnf);
                 (match self.filter {
                     Filter::All => true,
                     Filter::Only(s) => a.source == s,

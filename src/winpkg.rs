@@ -86,7 +86,7 @@ pub fn safe_name(s: &str) -> bool {
     !s.is_empty() && s.len() <= 128 && !s.starts_with('-') && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"._+-@/".contains(&b)) && !s.contains("..")
 }
 
-fn app(prefix: &str, id: &str, name: &str, vendor: &str, from: &str, to: &str, source: Source) -> App {
+pub fn app(prefix: &str, id: &str, name: &str, vendor: &str, from: &str, to: &str, source: Source) -> App {
     let name = scan::clean(name);
     App {
         id: format!("{prefix}:{id}"),

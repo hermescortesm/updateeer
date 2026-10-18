@@ -1,6 +1,7 @@
 //! Asks the user, with a system notification, whether to update an app that is open.
 //! Buttons: "Actualizar ahora" / "Más tarde". Falls back to a dialog when notifications are not
 //! available (running outside an .app bundle, or permission denied).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub enum Reply {
     /// Ids of the apps to update now.
     UpdateNow(Vec<String>),
@@ -215,6 +216,7 @@ mod imp {
 pub use imp::Notifier;
 
 /// Title and body of the question: names every app when there is more than one.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn message(apps: &[crate::model::App]) -> (String, String) {
     match apps {
         [app] => (format!("{} tiene una actualización", app.name), format!("Está abierta ahora. Versión {} → {}.", app.from, app.to)),
