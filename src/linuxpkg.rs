@@ -97,7 +97,48 @@ pub fn upgrade(kind: &str, name: &str) -> Result<(), String> {
     .map(|_| ())
 }
 
+/// Installs a Flathub app or an apt package; blocks, so call it from a worker thread.
+pub fn install(kind: &str, name: &str) -> Result<(), String> {
+    if !safe_name(name) {
+        return Err(format!("id no soportado: {kind}:{name}"));
+    }
+    match kind {
+        "flatpak" => exec("flatpak", &["install", "-y", "--noninteractive", "flathub", name], UPGRADE_TIMEOUT),
+        "apt" => root(&["env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y", name]),
+        _ => Err(format!("id no soportado: {kind}:{name}")),
+    }
+    .map(|_| ())
+}
+
+/// `flatpak search --columns=application,name`: tab separated.
+pub fn parse_flatpak_search(out: &str) -> Vec<App> {
+    parse_flatpak_rows(out).into_iter().map(|(id, name, _)| app("flatpak", &id, &name, flatpak_vendor(&id), "", "", Source::Flatpak)).collect()
+}
+
+/// `apt-cache search --names-only`: `name - description`.
+pub fn parse_apt_search(out: &str) -> Vec<App> {
+    out.lines()
+        .filter_map(|l| {
+            let (name, desc) = l.split_once(" - ")?;
+            safe_name(name).then(|| app("apt", name, name, desc, "", "", Source::Apt))
+        })
+        .collect()
+}
+
 /// Reverse-DNS ids (`org.mozilla.firefox`): the second part names the publisher.
+pub fn search(q: &str) -> Vec<App> {
+    let mut out = Vec::new();
+    if path("flatpak").is_some()
+        && let Ok(text) = exec("flatpak", &["search", "--columns=application,name", q], SCAN_TIMEOUT)
+    {
+        out.extend(parse_flatpak_search(&text).into_iter().take(15));
+    }
+    if let Ok(text) = exec("apt-cache", &["search", "--names-only", q], SCAN_TIMEOUT) {
+        out.extend(parse_apt_search(&text).into_iter().take(15));
+    }
+    out
+}
+
 fn flatpak_vendor(id: &str) -> &str {
     id.split('.').nth(1).filter(|_| id.matches('.').count() >= 2).unwrap_or("Flatpak")
 }
@@ -299,6 +340,14 @@ mod tests {
         let refresh = "Name     Version  Rev  Size  Publisher  Notes\nspotify  1.2.40   76   200MB spotify✓   -\n";
         assert_eq!(rows(&parse_snap_list(list)), [("snap:spotify", "1.2.30", "")]);
         assert_eq!(rows(&parse_snap_refresh(refresh, list)), [("snap:spotify", "1.2.30", "1.2.40")]);
+    }
+
+    #[test]
+    fn search_outputs() {
+        let f = parse_flatpak_search("org.mozilla.firefox\tFirefox\ncom.x.Y\tY App\n");
+        assert_eq!((f[0].id.as_str(), f[0].name.as_str()), ("flatpak:org.mozilla.firefox", "Firefox"));
+        let a = parse_apt_search("firefox-esr - Mozilla Firefox web browser\n-bad - x\nnoise\n");
+        assert_eq!((a.len(), a[0].id.as_str(), a[0].vendor.as_str()), (1, "apt:firefox-esr", "Mozilla Firefox web browser"));
     }
 
     #[test]

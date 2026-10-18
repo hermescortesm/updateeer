@@ -12,7 +12,9 @@ use crate::scan;
 use crate::settings::{HOURS, ThemeMode};
 use crate::theme::*;
 use crate::queue::Status;
-use crate::ui::{Page, UpdatesApp, cell, search_field, segment};
+use crate::catalog::{self, Cat};
+use crate::discover;
+use crate::ui::{Page, UpdatesApp, cell, combo, search_field, segment};
 use crate::widgets::{self, Icon, Kind};
 
 fn header(ui: &mut Ui, title: &str, subtitle: &str) {
@@ -57,7 +59,173 @@ fn name_cell(ui: &mut Ui, rect: egui::Rect, left: f32, app: &App, icon: Option<&
     });
 }
 
+/// Where an install started from "Discover" stands.
+pub(crate) enum Inst {
+    Running,
+    Done,
+    Failed(String),
+}
+
+type Found = Result<Vec<App>, String>;
+
+/// State of the Discover page.
+pub(crate) struct Discover {
+    cat: Cat,
+    catalog: Vec<App>,
+    installs: std::collections::HashMap<String, Inst>,
+    tx: mpsc::Sender<(String, Result<(), String>)>,
+    rx: mpsc::Receiver<(String, Result<(), String>)>,
+    /// A free-text search in flight, and the last one's results (with the text they were for).
+    search_rx: Option<mpsc::Receiver<Found>>,
+    results: Vec<App>,
+    results_for: String,
+    search_error: Option<String>,
+}
+
+impl Discover {
+    pub(crate) fn new() -> Self {
+        let (tx, rx) = mpsc::channel();
+        Self { cat: Cat::All, catalog: catalog::for_this_os(), installs: Default::default(), tx, rx, search_rx: None, results: Vec::new(), results_for: String::new(), search_error: None }
+    }
+}
+
 impl UpdatesApp {
+    fn poll_discover(&mut self) {
+        while let Ok((id, result)) = self.discover.rx.try_recv() {
+            match result {
+                Ok(()) => {
+                    self.discover.installs.insert(id, Inst::Done);
+                    self.installed_stale = true;
+                }
+                Err(e) => {
+                    self.discover.installs.insert(id, Inst::Failed(e));
+                }
+            }
+        }
+        if let Some(rx) = &self.discover.search_rx
+            && let Ok(result) = rx.try_recv()
+        {
+            self.discover.search_rx = None;
+            match result {
+                Ok(apps) => self.discover.results = apps,
+                Err(e) => self.discover.search_error = Some(e),
+            }
+        }
+    }
+
+    fn start_install(&mut self, id: String) {
+        self.discover.installs.insert(id.clone(), Inst::Running);
+        let (tx, ctx) = (self.discover.tx.clone(), self.ctx.clone());
+        thread::spawn(move || {
+            let result = crate::upgrade::install(&id);
+            let _ = tx.send((id, result));
+            ctx.request_repaint();
+        });
+    }
+
+    fn start_search(&mut self, q: String) {
+        let (tx, ctx) = (mpsc::channel(), self.ctx.clone());
+        let sender = tx.0;
+        let query = q.clone();
+        thread::spawn(move || {
+            let _ = sender.send(discover::search(&query));
+            ctx.request_repaint();
+        });
+        self.discover.search_rx = Some(tx.1);
+        self.discover.results.clear();
+        self.discover.search_error = None;
+        self.discover.results_for = q.to_lowercase();
+    }
+
+    pub(crate) fn discover_page(&mut self, ui: &mut Ui) {
+        self.poll_discover();
+        self.poll_installed();
+        // The installed list marks what is already there.
+        if self.installed_stale && self.installed_rx.is_none() {
+            self.start_installed();
+        }
+        header(ui, "Descubrir", "Apps populares para instalar con un clic");
+        if !discover::available() {
+            card(ui, |ui| empty(ui, "Hace falta un gestor de paquetes (Homebrew, winget o Flatpak) para instalar apps."));
+            return;
+        }
+        let q = self.query.trim().to_lowercase();
+        let searching = self.discover.search_rx.is_some();
+        ui.horizontal(|ui| ui.with_layout(Layout::right_to_left(Align::Center), |ui| search_field(ui, &mut self.query)));
+        ui.add_space(12.0);
+        let mut search = false;
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 10.0;
+            let options: Vec<(Cat, &str)> = Cat::ALL.iter().map(|c| (*c, c.label())).collect();
+            combo(ui, "Categoría", &mut self.discover.cat, &options);
+            if discover::safe_query(&q) {
+                ui.add_space(8.0);
+                let label = if searching { "Buscando…" } else { "Buscar más resultados en línea" };
+                search = widgets::button(ui, Some(Icon::Search), label, Kind::Soft, 34.0, !searching).clicked();
+            }
+        });
+        if search {
+            self.start_search(q.clone());
+        }
+        ui.add_space(18.0);
+
+        // Catalog matches first, then whatever the online search found (when it was for this text).
+        let cat = self.discover.cat;
+        let mut rows: Vec<App> = self.discover.catalog.iter().filter(|a| (cat == Cat::All || catalog::CATALOG.iter().any(|e| e.name == a.name && e.cat == cat)) && (q.is_empty() || a.name.to_lowercase().contains(&q))).cloned().collect();
+        if cat == Cat::All && self.discover.results_for == q {
+            for a in &self.discover.results {
+                if !rows.iter().any(|r| r.id.eq_ignore_ascii_case(&a.id)) {
+                    rows.push(a.clone());
+                }
+            }
+        }
+        let have: std::collections::HashSet<String> = self.installed.iter().map(|a| a.id.to_lowercase()).collect();
+        let mut install: Option<String> = None;
+        card(ui, |ui| {
+            ui.set_height(ui.available_height());
+            if rows.is_empty() {
+                let msg = match (&self.discover.search_error, searching) {
+                    (Some(e), _) => format!("No se pudo buscar: {e}"),
+                    (_, true) => "Buscando…".to_string(),
+                    _ => "Nada coincide. Prueba «Buscar más resultados en línea».".to_string(),
+                };
+                empty(ui, &msg);
+                return;
+            }
+            ScrollArea::vertical().auto_shrink(false).show_rows(ui, 68.0, rows.len(), |ui, range| {
+                for app in &rows[range] {
+                    ui.push_id(&app.id, |ui| {
+                        let (rect, left, right) = list_row(ui);
+                        name_cell(ui, rect, left, app, self.icons.get(&app.id));
+                        let state = self.discover.installs.get(&app.id);
+                        let installed = have.contains(&app.id.to_lowercase()) || matches!(state, Some(Inst::Done));
+                        if let Some(Inst::Failed(e)) = state {
+                            cell(ui, rect, left + 290.0, right - 150.0, Layout::left_to_right(Align::Center), |ui| {
+                                let first = e.lines().find(|l| !l.trim().is_empty()).unwrap_or(e);
+                                ui.add(egui::Label::new(RichText::new(format!("Falló: {first}")).size(12.5).color(egui::Color32::from_rgb(0xFF, 0x7A, 0x6B))).truncate()).on_hover_text(e);
+                            });
+                        }
+                        cell(ui, rect, right - 140.0, right, Layout::right_to_left(Align::Center), |ui| {
+                            if installed {
+                                ui.label(RichText::new("Instalada").size(13.0).family(semibold()).color(accent_text()));
+                            } else if matches!(state, Some(Inst::Running)) {
+                                ui.label(RichText::new("Instalando…").size(13.0).color(faint()));
+                            } else {
+                                let label = if matches!(state, Some(Inst::Failed(_))) { "Reintentar" } else { "Instalar" };
+                                if widgets::button(ui, Some(Icon::Download), label, Kind::Soft, 34.0, true).clicked() {
+                                    install = Some(app.id.clone());
+                                }
+                            }
+                        });
+                    });
+                }
+            });
+        });
+        if let Some(id) = install {
+            self.start_install(id);
+        }
+    }
+
     fn start_installed(&mut self) {
         self.installed_stale = false;
         self.installed_error = None;
