@@ -64,6 +64,8 @@ fn package_kind(has: impl Fn(&str) -> bool) -> Option<(&'static str, &'static st
         Some(("pacman", ".pkg.tar.zst"))
     } else if has("dnf") {
         Some(("dnf", ".rpm"))
+    } else if has("zypper") {
+        Some(("zypper", ".rpm"))
     } else {
         None
     }
@@ -110,7 +112,7 @@ fn wanted_file() -> Result<(String, &'static str), String> {
     } else if cfg!(windows) {
         Ok(("windows-x64.msi".into(), ""))
     } else {
-        let (manager, suffix) = package_kind(|k| crate::linuxpkg::path(k).is_some()).ok_or("No se encontró apt, pacman ni dnf")?;
+        let (manager, suffix) = package_kind(|k| crate::linuxpkg::path(k).is_some()).ok_or("No se encontró apt, pacman, dnf ni zypper")?;
         Ok((suffix.to_string(), manager))
     }
 }
@@ -217,6 +219,26 @@ fn run_msi(msi: &Path) -> Result<(), String> {
     spawn_detached(Command::new("powershell").args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &script]))
 }
 
+/// The release notes as plain text for the in-app "what's new": headings and bullets tidied,
+/// the checksum list left out.
+pub fn summary(notes: &str) -> String {
+    let mut out = Vec::new();
+    for line in notes.lines().map(str::trim) {
+        if line.starts_with("### SHA-256") {
+            break;
+        }
+        if line.is_empty() || line.starts_with("## ") || line.starts_with("```") {
+            continue;
+        }
+        out.push(match (line.strip_prefix("### "), line.strip_prefix("- ")) {
+            (Some(h), _) => format!("{h}:"),
+            (_, Some(b)) => format!("• {b}"),
+            _ => line.to_string(),
+        });
+    }
+    out.join("\n")
+}
+
 fn parts(v: &str) -> Option<Vec<u64>> {
     v.trim_start_matches('v').split('.').map(|p| p.parse().ok()).collect()
 }
@@ -299,5 +321,11 @@ mod tests {
         let f = std::env::temp_dir().join("updateeer-sha-test");
         std::fs::write(&f, "abc").unwrap();
         assert_eq!(sha256(f.to_str().unwrap()).unwrap(), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    }
+
+    #[test]
+    fn notes_become_plain_text() {
+        let notes = "## Updateeer 0.1.85\n\n### Added\n- A banner\n\n### SHA-256\n```\nabc  file\n```\n";
+        assert_eq!(summary(notes), "Added:\n• A banner");
     }
 }

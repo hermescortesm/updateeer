@@ -74,16 +74,22 @@ fn source_filters() -> Vec<(&'static str, Filter)> {
     if cfg!(windows) {
         vec![("Todas", Filter::All), ("winget", Filter::Only(Source::Winget)), ("Scoop", Filter::Only(Source::Scoop)), ("Chocolatey", Filter::Only(Source::Chocolatey))]
     } else if cfg!(target_os = "linux") {
-        vec![
-            ("Todas", Filter::All),
-            ("apt", Filter::Only(Source::Apt)),
-            ("pacman", Filter::Only(Source::Pacman)),
-            ("AUR", Filter::Only(Source::Aur)),
-            ("dnf", Filter::Only(Source::Dnf)),
-            ("Flatpak", Filter::Only(Source::Flatpak)),
-            ("Snap", Filter::Only(Source::Snap)),
-            ("Directas", Filter::Only(Source::Direct)),
-        ]
+        // Only the managers this machine has, so the row stays short.
+        let chips = [
+            ("apt", "apt", Source::Apt),
+            ("pacman", "pacman", Source::Pacman),
+            ("aur", "AUR", Source::Aur),
+            ("dnf", "dnf", Source::Dnf),
+            ("zypper", "zypper", Source::Zypper),
+            ("apk", "apk", Source::Apk),
+            ("xbps", "xbps", Source::Xbps),
+            ("flatpak", "Flatpak", Source::Flatpak),
+            ("snap", "Snap", Source::Snap),
+        ];
+        let mut v = vec![("Todas", Filter::All)];
+        v.extend(chips.into_iter().filter(|(k, _, _)| crate::linuxpkg::path(k).is_some()).map(|(_, label, s)| (label, Filter::Only(s))));
+        v.push(("Directas", Filter::Only(Source::Direct)));
+        v
     } else {
         vec![("Todas", Filter::All), ("App Store", Filter::Only(Source::AppStore)), ("Homebrew", Filter::Only(Source::Homebrew)), ("Directas", Filter::Only(Source::Direct))]
     }
@@ -121,6 +127,7 @@ pub struct UpdatesApp {
     /// Updateeer replacing itself with the new package (Linux).
     pub(crate) self_update_rx: Option<Receiver<Result<(), String>>>,
     pub(crate) self_update_error: Option<String>,
+    show_notes: bool,
     pub(crate) page: Page,
     pub(crate) settings: Settings,
     pub(crate) installed: Vec<App>,
@@ -184,6 +191,7 @@ impl UpdatesApp {
             release_rx: None,
             self_update_rx: None,
             self_update_error: None,
+            show_notes: false,
             page: if cfg!(target_os = "macos") && !settings.onboarded { Page::Welcome } else { Page::Updates },
             settings,
             installed: Vec::new(),
@@ -391,7 +399,7 @@ impl UpdatesApp {
             .filter(|&i| {
                 let a = &self.apps[i];
                 // System packages are tools unless they ship a launcher (a graphical app).
-                let tool = a.id.starts_with("formula:") || (matches!(a.source, Source::Apt | Source::Pacman | Source::Aur | Source::Dnf) && !crate::linuxpkg::is_gui(&a.id));
+                let tool = a.id.starts_with("formula:") || (matches!(a.source, Source::Apt | Source::Pacman | Source::Aur | Source::Dnf | Source::Zypper | Source::Apk | Source::Xbps) && !crate::linuxpkg::is_gui(&a.id));
                 (match self.filter {
                     Filter::All => true,
                     Filter::Only(s) => a.source == s,
@@ -673,6 +681,9 @@ impl UpdatesApp {
         if self.setup_banner(ui) {
             ui.add_space(22.0);
         }
+        if self.release_banner(ui) {
+            ui.add_space(22.0);
+        }
 
         ui.horizontal(|ui| {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -807,6 +818,56 @@ impl UpdatesApp {
 
     /// Offers to install Homebrew or `mas` (macOS). Nothing is installed without a click.
     /// Returns whether it drew anything.
+    /// A newer Updateeer exists: install it (or open the download), with its release notes.
+    fn release_banner(&mut self, ui: &mut Ui) -> bool {
+        let Some(release) = self.new_release.clone() else { return false };
+        let can_install = crate::selfupdate::can_self_install();
+        let installing = self.self_update_rx.is_some();
+        let (mut act, mut notes) = (false, false);
+        Frame::new()
+            .fill(banner_bg())
+            .stroke(Stroke::new(1.0, Color32::from_rgba_unmultiplied(0xFF, 0x8A, 0x2A, 77)))
+            .corner_radius(14)
+            .inner_margin(Margin::symmetric(18, 16))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 12.0;
+                    ui.vertical(|ui| {
+                        ui.set_width(ui.available_width() - 320.0);
+                        ui.spacing_mut().item_spacing.y = 4.0;
+                        ui.label(RichText::new(format!("Updateeer {} está disponible", release.version)).size(14.0).family(semibold()));
+                        let detail = match (&self.self_update_error, installing, can_install) {
+                            (Some(e), _, _) => format!("No se pudo actualizar: {e}"),
+                            (_, true, _) => "Descargando e instalando… la app se reiniciará sola.".to_string(),
+                            (_, _, true) => format!("Tienes la {}. Se descarga, se verifica y la app se reinicia sola.", env!("CARGO_PKG_VERSION")),
+                            _ => format!("Tienes la {}. Descárgala desde la página de la versión.", env!("CARGO_PKG_VERSION")),
+                        };
+                        ui.label(RichText::new(detail).size(13.0).color(muted()));
+                    });
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let label = if can_install { "Instalar y reiniciar" } else { "Descargar" };
+                        act = widgets::button(ui, Some(Icon::Download), label, Kind::Primary, 36.0, !installing).clicked();
+                        notes = widgets::button(ui, None, if self.show_notes { "Ocultar novedades" } else { "Novedades" }, Kind::Soft, 36.0, true).clicked();
+                    });
+                });
+                if self.show_notes {
+                    ui.add_space(8.0);
+                    ui.label(RichText::new(crate::selfupdate::summary(&release.notes)).size(13.0).color(muted()));
+                }
+            });
+        if notes {
+            self.show_notes = !self.show_notes;
+        }
+        if act {
+            if can_install {
+                self.start_self_update();
+            } else {
+                crate::selfupdate::open(&release.url);
+            }
+        }
+        true
+    }
+
     fn setup_banner(&mut self, ui: &mut Ui) -> bool {
         let (brew, mas) = self.tools;
         if !cfg!(target_os = "macos") || self.settings.hide_setup || (brew && mas) {
