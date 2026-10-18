@@ -50,11 +50,11 @@ pub fn set(on: bool) -> Result<(), String> {
             reg(&["delete", RUN_KEY, "/v", "Updateeer", "/f"])
         };
         // Deleting a value that is not there is fine.
-        return match out {
+        match out {
             Ok(o) if o.status.success() || !on => Ok(()),
             Ok(o) => Err(String::from_utf8_lossy(&o.stderr).trim().to_string()),
             Err(e) => Err(e.to_string()),
-        };
+        }
     }
     #[cfg(not(windows))]
     {

@@ -199,6 +199,17 @@ pub fn upgrade(kind: &str, name: &str) -> Result<(), String> {
     .map(|_| ())
 }
 
+/// Installs a local package file (Updateeer's own update); blocks, so call it from a worker thread.
+pub fn install_file(kind: &str, file: &str) -> Result<(), String> {
+    match kind {
+        "apt" => root(&["env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y", file]),
+        "pacman" => root(&["pacman", "-U", "--noconfirm", file]),
+        "dnf" => root(&["dnf", "install", "-y", file]),
+        _ => Err(format!("gestor no soportado: {kind}")),
+    }
+    .map(|_| ())
+}
+
 /// Installs a Flathub app or an apt package; blocks, so call it from a worker thread.
 pub fn install(kind: &str, name: &str) -> Result<(), String> {
     if !safe_name(name) {
