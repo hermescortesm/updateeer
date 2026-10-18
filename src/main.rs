@@ -11,6 +11,7 @@ mod model;
 mod native;
 mod notify;
 mod pages;
+mod permissions;
 mod queue;
 mod running;
 mod scan;

@@ -34,7 +34,24 @@ pub fn upgrade(id: &str) -> Result<(), String> {
     if !safe_id(id) {
         return Err(format!("id no soportado: {id}"));
     }
-    mas(&["upgrade", id], UPGRADE_TIMEOUT).map(|_| ())
+    match mas(&["upgrade", id], UPGRADE_TIMEOUT) {
+        // Recent `mas` versions call sudo, which cannot ask for a password here.
+        Err(e) if needs_admin(&e) => admin_upgrade(id),
+        r => r.map(|_| ()),
+    }
+}
+
+fn needs_admin(error: &str) -> bool {
+    error.contains("password is required") || error.contains("a terminal is required")
+}
+
+/// Runs the upgrade as root behind the system's own password dialog.
+fn admin_upgrade(id: &str) -> Result<(), String> {
+    let bin = path().ok_or("mas no está instalado (brew install mas)")?;
+    let script = format!("do shell script {} with administrator privileges", crate::setup::applescript_string(&format!("{bin} upgrade {id}")));
+    scan::run(Command::new("/usr/bin/osascript"), &["-e", &script], UPGRADE_TIMEOUT).map(|_| ()).map_err(|e| {
+        if e.contains("-128") { "Cancelaste la petición de contraseña".to_string() } else { e }
+    })
 }
 
 /// Lines look like `497799835  Xcode  (27.0 -> 27.1)` (outdated) or `...  (27.0)` (list).
@@ -84,6 +101,12 @@ mod tests {
         let list = parse("937984704  Amphetamine     (5.3.2)\n", false);
         assert_eq!((list[0].name.as_str(), list[0].from.as_str(), list[0].to.as_str()), ("Amphetamine", "5.3.2", ""));
         assert!(parse("937984704  Amphetamine (5.3.2)\n", true).is_empty());
+    }
+
+    #[test]
+    fn sudo_failures_are_recognized() {
+        assert!(needs_admin("sudo: a terminal is required to read the password; either use the -S option\nsudo: a password is required"));
+        assert!(!needs_admin("Error: no such app"));
     }
 
     #[test]
