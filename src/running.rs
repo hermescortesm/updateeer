@@ -37,7 +37,7 @@ fn parse_tasklist(out: &str) -> Vec<String> {
 
 /// Package managers that ask for administrator rights: they never update on their own.
 pub fn needs_admin(app: &App) -> bool {
-    matches!(app.source, Source::Apt | Source::Pacman | Source::Aur | Source::Dnf | Source::Chocolatey)
+    matches!(app.source, Source::Apt | Source::Pacman | Source::Aur | Source::Dnf | Source::Zypper | Source::Apk | Source::Xbps | Source::Chocolatey)
 }
 
 /// Lowercase names a running process of this app could have: the package name, or the last part
