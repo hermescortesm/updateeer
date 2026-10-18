@@ -137,7 +137,7 @@ fn sources(installed: bool) -> Vec<SourceResult> {
             ("Chocolatey", winpkg::choco_path().map(|_| if installed { winpkg::choco_installed() } else { winpkg::choco_outdated() })),
         ]
     } else if cfg!(target_os = "linux") {
-        ["apt", "pacman", "dnf", "flatpak", "snap"]
+        ["apt", "pacman", "aur", "dnf", "flatpak", "snap"]
             .into_iter()
             .map(|k| (k, linuxpkg::path(k).map(|_| if installed { linuxpkg::installed(k) } else { linuxpkg::outdated(k) })))
             .collect()

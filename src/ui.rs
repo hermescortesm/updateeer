@@ -78,9 +78,11 @@ fn source_filters() -> Vec<(&'static str, Filter)> {
             ("Todas", Filter::All),
             ("apt", Filter::Only(Source::Apt)),
             ("pacman", Filter::Only(Source::Pacman)),
+            ("AUR", Filter::Only(Source::Aur)),
             ("dnf", Filter::Only(Source::Dnf)),
             ("Flatpak", Filter::Only(Source::Flatpak)),
             ("Snap", Filter::Only(Source::Snap)),
+            ("Directas", Filter::Only(Source::Direct)),
         ]
     } else {
         vec![("Todas", Filter::All), ("App Store", Filter::Only(Source::AppStore)), ("Homebrew", Filter::Only(Source::Homebrew)), ("Directas", Filter::Only(Source::Direct))]
@@ -388,7 +390,8 @@ impl UpdatesApp {
         let mut rows: Vec<usize> = (0..self.apps.len())
             .filter(|&i| {
                 let a = &self.apps[i];
-                let tool = a.id.starts_with("formula:") || matches!(a.source, Source::Apt | Source::Pacman | Source::Dnf);
+                // System packages are tools unless they ship a launcher (a graphical app).
+                let tool = a.id.starts_with("formula:") || (matches!(a.source, Source::Apt | Source::Pacman | Source::Aur | Source::Dnf) && !crate::linuxpkg::is_gui(&a.id));
                 (match self.filter {
                     Filter::All => true,
                     Filter::Only(s) => a.source == s,
