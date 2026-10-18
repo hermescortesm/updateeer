@@ -113,6 +113,9 @@ pub struct UpdatesApp {
     done_tx: Sender<(String, Result<(), String>)>,
     done_rx: Receiver<(String, Result<(), String>)>,
     last_scan: Instant,
+    /// A newer Updateeer on GitHub, once found; and the check in flight.
+    pub(crate) new_release: Option<crate::selfupdate::Release>,
+    release_rx: Option<Receiver<Result<crate::selfupdate::Release, String>>>,
     pub(crate) page: Page,
     pub(crate) settings: Settings,
     pub(crate) installed: Vec<App>,
@@ -172,6 +175,8 @@ impl UpdatesApp {
             done_tx,
             done_rx,
             last_scan: Instant::now(),
+            new_release: None,
+            release_rx: None,
             page: if cfg!(target_os = "macos") && !settings.onboarded { Page::Welcome } else { Page::Updates },
             settings,
             installed: Vec::new(),
@@ -209,7 +214,31 @@ impl UpdatesApp {
         self.scan_rx.is_some()
     }
 
+    /// Looks for a newer Updateeer (same rhythm as the app search: startup, the chosen frequency,
+    /// and every press of "Buscar actualizaciones").
+    fn check_release(&mut self) {
+        if !self.settings.check_updates || self.release_rx.is_some() {
+            return;
+        }
+        let (tx, ctx) = (mpsc::channel(), self.ctx.clone());
+        let sender = tx.0;
+        thread::spawn(move || {
+            let _ = sender.send(crate::selfupdate::latest());
+            ctx.request_repaint();
+        });
+        self.release_rx = Some(tx.1);
+    }
+
+    fn poll_release(&mut self) {
+        let Some(rx) = &self.release_rx else { return };
+        let Ok(result) = rx.try_recv() else { return };
+        self.release_rx = None;
+        // A failed check (offline, rate limit) is silent: nothing to tell the user.
+        self.new_release = result.ok().filter(|r| crate::selfupdate::is_newer(env!("CARGO_PKG_VERSION"), &r.version));
+    }
+
     fn start_scan(&mut self) {
+        self.check_release();
         if self.scanning() || self.queue.is_busy() {
             return;
         }
@@ -381,6 +410,7 @@ impl eframe::App for UpdatesApp {
         self.poll_mas_install();
         self.poll_notify();
         self.poll_scan();
+        self.poll_release();
         self.poll_icons();
         while let Ok((id, result)) = self.done_rx.try_recv() {
             let error = result.as_ref().err().cloned();
@@ -535,6 +565,16 @@ impl UpdatesApp {
                 ui.add_space(6.0);
                 ui.label(RichText::new(format!("Versión {}", env!("CARGO_PKG_VERSION"))).size(12.0).color(faint()));
             });
+            if let Some(r) = &self.new_release {
+                ui.add_space(6.0);
+                let link = ui.horizontal(|ui| {
+                    ui.add_space(6.0);
+                    ui.add(egui::Label::new(RichText::new(format!("Nueva versión {} disponible", r.version)).size(12.5).family(semibold()).color(accent_text())).sense(Sense::click()))
+                });
+                if link.inner.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("Abrir la página de descarga").clicked() {
+                    crate::selfupdate::open(&r.url);
+                }
+            }
         });
     }
 
