@@ -32,7 +32,7 @@
 |---------|---------|
 | macOS   | Homebrew (casks and formulae), Mac App Store (via [`mas`](https://github.com/mas-cli/mas)), apps downloaded directly (listed, not yet updated) |
 | Windows | winget, Scoop, Chocolatey |
-| Linux   | apt, pacman, dnf, Flatpak, Snap |
+| Linux   | apt, pacman, AUR (via `paru` or `yay`), dnf, Flatpak, Snap, plus apps installed by hand (AppImages, tarballs) that have a launcher |
 
 On macOS, Updateeer can install Homebrew and `mas` for you — only after you click the button.
 

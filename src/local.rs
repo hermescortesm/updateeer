@@ -32,7 +32,7 @@ fn installed_at(a: &App) -> Option<SystemTime> {
     match kind {
         // Linux: when the package files landed on disk.
         "apt" => ["", ":amd64", ":arm64", ":i386"].iter().find_map(|arch| fs::metadata(format!("/var/lib/dpkg/info/{name}{arch}.list")).ok()?.modified().ok()),
-        "pacman" => fs::metadata(format!("/var/lib/pacman/local/{name}-{}", a.from)).ok()?.modified().ok(),
+        "pacman" | "aur" => fs::metadata(format!("/var/lib/pacman/local/{name}-{}", a.from)).ok()?.modified().ok(),
         "flatpak" => {
             let user = std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share/flatpak/app").join(name));
             [Some(PathBuf::from("/var/lib/flatpak/app").join(name)), user].into_iter().flatten().find_map(|p| fs::metadata(p).ok()?.modified().ok())
@@ -53,6 +53,9 @@ fn app_dirs() -> Vec<PathBuf> {
 /// Apps sitting in the usual folders that no package manager reported: direct downloads.
 /// `known` are the apps already found (Homebrew casks, App Store), matched by bundle name.
 pub fn direct_apps(known: &[App]) -> Vec<App> {
+    if cfg!(target_os = "linux") {
+        return crate::linuxpkg::direct_apps(known);
+    }
     if !cfg!(target_os = "macos") {
         return Vec::new();
     }
