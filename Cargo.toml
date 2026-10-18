@@ -2,6 +2,10 @@
 name = "updateeer"
 version = "0.1.2"
 edition = "2024"
+description = "Keeps your installed apps up to date from one queue"
+authors = ["Hermes Cortes <admin@hermescortes.com>"]
+license = "MIT"
+repository = "https://github.com/hermescortesm/updateeer"
 
 [dependencies]
 eframe = { version = "0.37.0", default-features = false, features = ["glow", "x11", "wayland"] }

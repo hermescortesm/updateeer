@@ -12,6 +12,7 @@ trap 'rm -rf "$root"' EXIT
 
 install -Dm755 target/release/updateeer "$root/usr/bin/updateeer"
 install -Dm644 packaging/linux/updateeer.desktop "$root/usr/share/applications/updateeer.desktop"
+install -Dm644 LICENSE "$root/usr/share/doc/updateeer/copyright"
 install -Dm644 assets/icon.png "$root/usr/share/icons/hicolor/256x256/apps/updateeer.png"
 mkdir -p "$root/DEBIAN"
 cat > "$root/DEBIAN/control" <<CONTROL
@@ -23,6 +24,7 @@ Architecture: $arch
 Maintainer: Hermes Cortes <admin@hermescortes.com>
 Depends: libc6, libgl1 | libegl1, libxkbcommon0, policykit-1 | pkexec
 Recommends: libwayland-client0, libx11-6
+Homepage: https://github.com/hermescortesm/updateeer
 Description: Keeps your installed apps up to date
  Detects outdated apps from apt, pacman, dnf, Flatpak and Snap and updates
  them from one queue.

@@ -325,9 +325,28 @@ impl UpdatesApp {
             setting_row(ui, "Versión", "Updateeer", |ui| {
                 ui.label(RichText::new(env!("CARGO_PKG_VERSION")).monospace().size(13.0).color(text_2()));
             });
-            setting_row(ui, "Homebrew", "Ruta que usa para buscar y actualizar.", |ui| {
-                ui.label(RichText::new(scan::brew_path().unwrap_or("no instalado")).monospace().size(13.0).color(text_2()));
+            if cfg!(target_os = "macos") {
+                setting_row(ui, "Homebrew", "Ruta que usa para buscar y actualizar.", |ui| {
+                    ui.label(RichText::new(scan::brew_path().unwrap_or("no instalado")).monospace().size(13.0).color(text_2()));
+                });
+            }
+        });
+        ui.add_space(16.0);
+        card(ui, |ui| {
+            Frame::new().inner_margin(18).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 14.0;
+                    widgets::logo(ui, 52.0);
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = 3.0;
+                        ui.label(RichText::new("Updateeer").size(18.0).family(display()));
+                        ui.label(RichText::new("Todas tus apps al día, desde una sola cola. Gratis y de código abierto.").size(12.5).color(faint()));
+                    });
+                });
             });
+            value_row(ui, "Autor", "Hermes Cortes · admin@hermescortes.com");
+            value_row(ui, "Licencia", "MIT — gratis para usar, copiar y modificar");
+            value_row(ui, "Código fuente", "github.com/hermescortesm/updateeer");
         });
         if let Some(on) = want_login {
             self.set_login(on);
