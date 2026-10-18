@@ -17,7 +17,7 @@ use crate::winpkg::{app, safe_name};
 
 /// First `name` found in the usual binary directories.
 fn find(name: &str) -> Option<PathBuf> {
-    ["/usr/bin", "/bin", "/usr/local/bin", "/snap/bin", "/var/lib/flatpak/exports/bin"].iter().map(|d| PathBuf::from(d).join(name)).find(|p| p.is_file())
+    ["/usr/bin", "/bin", "/usr/local/bin", "/sbin", "/usr/sbin", "/snap/bin", "/var/lib/flatpak/exports/bin"].iter().map(|d| PathBuf::from(d).join(name)).find(|p| p.is_file())
 }
 
 pub fn path(kind: &str) -> Option<PathBuf> {
@@ -25,6 +25,7 @@ pub fn path(kind: &str) -> Option<PathBuf> {
         "apt" => "apt-get",
         // AUR packages are the foreign ones of pacman; the helper is only needed to update them.
         "aur" => "pacman",
+        "xbps" => "xbps-install",
         k => k,
     })
 }
@@ -278,6 +279,16 @@ pub fn outdated(kind: &str) -> Result<Vec<App>, String> {
             fill_rpm_versions(&mut apps);
             apps
         }
+        "zypper" => {
+            set_gui("zypper", rpm_gui().iter().map(|(n, _)| n).collect::<Vec<_>>().into_iter());
+            parse_zypper_updates(&exec("zypper", &["--non-interactive", "--quiet", "list-updates"], SCAN_TIMEOUT)?)
+        }
+        "apk" => parse_apk_updates(&none_if_silent(exec("apk", &["version", "-l", "<"], SCAN_TIMEOUT))?),
+        "xbps" => {
+            let new = none_if_silent(exec("xbps-install", &["-Mun"], SCAN_TIMEOUT))?;
+            let old = exec("xbps-query", &["-l"], SCAN_TIMEOUT)?;
+            parse_xbps_updates(&new, &old)
+        }
         "flatpak" => {
             let new = exec("flatpak", &["remote-ls", "--updates", "--app", "--columns=application,name,version"], SCAN_TIMEOUT)?;
             let old = exec("flatpak", &["list", "--app", "--columns=application,name,version"], SCAN_TIMEOUT)?;
@@ -313,6 +324,14 @@ pub fn installed(kind: &str) -> Result<Vec<App>, String> {
             apps.extend(gui.iter().filter(|(n, _)| !have.contains(n)).map(|(n, v)| app("dnf", n, n, "dnf", v, "", Source::Dnf)));
             apps
         }
+        // Everything rpm knows would drown the list, so zypper shows the apps with a launcher.
+        "zypper" => {
+            let gui = rpm_gui();
+            set_gui("zypper", gui.iter().map(|(n, _)| n).collect::<Vec<_>>().into_iter());
+            gui.iter().map(|(n, v)| app("zypper", n, n, "zypper", v, "", Source::Zypper)).collect()
+        }
+        "apk" => parse_apk_installed(&std::fs::read_to_string("/etc/apk/world").unwrap_or_default(), &exec("apk", &["info", "-v"], SCAN_TIMEOUT)?),
+        "xbps" => parse_xbps_manual(&exec("xbps-query", &["-m"], SCAN_TIMEOUT)?),
         "flatpak" => parse_flatpak_list(&exec("flatpak", &["list", "--app", "--columns=application,name,version"], SCAN_TIMEOUT)?),
         "snap" => parse_snap_list(&exec("snap", &["list"], SCAN_TIMEOUT)?),
         _ => return Err(format!("gestor no soportado: {kind}")),
@@ -370,6 +389,9 @@ pub fn upgrade(kind: &str, name: &str) -> Result<(), String> {
         // everything; later queue entries then find nothing left to do.
         "pacman" => root(&["pacman", "-Syu", "--noconfirm"]),
         "dnf" => root(&["dnf", "upgrade", "-y", name]),
+        "zypper" => root(&["zypper", "--non-interactive", "update", name]),
+        "apk" => root(&["apk", "add", "-u", name]),
+        "xbps" => root(&["xbps-install", "-y", name]),
         // AUR packages build as the user; the helper asks polkit whenever it needs root. It shares
         // the root lock so it never meets a `pacman -Syu` on the database lock.
         "aur" => {
@@ -394,6 +416,7 @@ pub fn install_file(kind: &str, file: &str) -> Result<(), String> {
         "apt" => root(&["env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y", file]),
         "pacman" => root(&["pacman", "-U", "--noconfirm", file]),
         "dnf" => root(&["dnf", "install", "-y", file]),
+        "zypper" => root(&["zypper", "--non-interactive", "install", "--allow-unsigned-rpm", file]),
         _ => Err(format!("gestor no soportado: {kind}")),
     }
     .map(|_| ())
@@ -499,6 +522,69 @@ pub fn parse_pairs(prefix: &str, out: &str, source: Source, sep: char) -> Vec<Ap
             safe_name(name).then(|| app(prefix, name, name, prefix, version.trim(), "", source))
         })
         .collect()
+}
+
+/// `zypper list-updates`: `S | Repository | Name | Current | Available | Arch` rows.
+pub fn parse_zypper_updates(out: &str) -> Vec<App> {
+    out.lines()
+        .filter_map(|l| {
+            let c: Vec<&str> = l.split('|').map(str::trim).collect();
+            let [status, _repo, name, from, to, _arch] = c[..] else { return None };
+            (status.len() == 1 && status != "S" && safe_name(name)).then(|| app("zypper", name, name, "zypper", from, to, Source::Zypper))
+        })
+        .collect()
+}
+
+/// `name-1.2.3-r0` into `(name, "1.2.3-r0")`.
+fn apk_split(full: &str) -> Option<(&str, String)> {
+    let mut p = full.trim().rsplitn(3, '-');
+    let (rel, ver, name) = (p.next()?, p.next()?, p.next()?);
+    ver.starts_with(|c: char| c.is_ascii_digit()).then(|| (name, format!("{ver}-{rel}")))
+}
+
+/// `apk version -l '<'`: `name-1.0-r0 < 1.1-r0`.
+pub fn parse_apk_updates(out: &str) -> Vec<App> {
+    out.lines()
+        .filter_map(|l| {
+            let (old, new) = l.split_once(" < ")?;
+            let (name, from) = apk_split(old)?;
+            safe_name(name).then(|| app("apk", name, name, "apk", &from, new.trim(), Source::Apk))
+        })
+        .collect()
+}
+
+/// `/etc/apk/world` (what the user asked for) joined with `apk info -v` (`name-version` lines).
+pub fn parse_apk_installed(world: &str, info: &str) -> Vec<App> {
+    let wanted: HashSet<&str> = world.split_whitespace().map(|w| w.split(['=', '<', '>', '~']).next().unwrap_or(w)).collect();
+    info.lines()
+        .filter_map(|l| {
+            let (name, ver) = apk_split(l)?;
+            (wanted.contains(name) && safe_name(name)).then(|| app("apk", name, name, "apk", &ver, "", Source::Apk))
+        })
+        .collect()
+}
+
+/// `xbps-query -l` rows are `ii name-1.0_1  description`.
+fn xbps_split(full: &str) -> Option<(&str, &str)> {
+    let (name, ver) = full.rsplit_once('-')?;
+    ver.starts_with(|c: char| c.is_ascii_digit()).then_some((name, ver))
+}
+
+/// `xbps-install -un` rows (`name-2.0_1 update x86_64 repo ...`) against the installed list.
+pub fn parse_xbps_updates(new: &str, installed: &str) -> Vec<App> {
+    let old: HashMap<&str, &str> = installed.lines().filter_map(|l| xbps_split(l.split_whitespace().nth(1)?)).collect();
+    new.lines()
+        .filter_map(|l| {
+            let mut t = l.split_whitespace();
+            let (name, to) = xbps_split(t.next()?)?;
+            (t.next()? == "update" && safe_name(name)).then(|| app("xbps", name, name, "xbps", old.get(name).copied().unwrap_or(""), to, Source::Xbps))
+        })
+        .collect()
+}
+
+/// `xbps-query -m` (manually installed): `name-1.0_1` per line.
+pub fn parse_xbps_manual(out: &str) -> Vec<App> {
+    out.lines().filter_map(|l| xbps_split(l.trim())).filter(|(n, _)| safe_name(n)).map(|(n, v)| app("xbps", n, n, "xbps", v, "", Source::Xbps)).collect()
 }
 
 /// `dnf list --upgrades`: `name.arch  version  repo` rows after an "Available Upgrades" header.
@@ -675,6 +761,17 @@ mod tests {
         let apps = installed("apt").unwrap();
         assert!(apps.iter().any(|a| a.name == "xterm" && !a.from.is_empty()));
         assert!(is_gui("apt:xterm"));
+    }
+
+    #[test]
+    fn zypper_apk_xbps() {
+        let z = "Loading repository data...\nS | Repository | Name | Current Version | Available Version | Arch\n--+------------+------+-----------------+-------------------+-------\nv | Main       | curl | 8.0-1.1         | 8.1-1.1           | x86_64\n";
+        assert_eq!(rows(&parse_zypper_updates(z)), [("zypper:curl", "8.0-1.1", "8.1-1.1")]);
+        assert_eq!(rows(&parse_apk_updates("Installed: Available:\ncurl-8.0.1-r0 < 8.1.0-r0\n")), [("apk:curl", "8.0.1-r0", "8.1.0-r0")]);
+        assert_eq!(rows(&parse_apk_installed("curl\nvim=1.0\n", "curl-8.0.1-r0\nmusl-1.2-r0\nvim-9.1-r1\n")), [("apk:curl", "8.0.1-r0", ""), ("apk:vim", "9.1-r1", "")]);
+        let installed = "ii firefox-126.0_1 Web browser\nii git-2.45_1 VCS\n";
+        assert_eq!(rows(&parse_xbps_updates("firefox-127.0_1 update x86_64 https://r 1 2\ngit-2.45_1 hold x86_64 r 1 2\n", installed)), [("xbps:firefox", "126.0_1", "127.0_1")]);
+        assert_eq!(rows(&parse_xbps_manual("git-2.45_1\nnot a package\n")), [("xbps:git", "2.45_1", "")]);
     }
 
     #[test]
