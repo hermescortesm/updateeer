@@ -32,6 +32,11 @@ fn exec(tool: &str, args: &[&str], timeout: std::time::Duration) -> Result<Strin
     scan::run(cmd, args, timeout)
 }
 
+/// Some tools (`pacman -Qu`, `checkupdates`) fail with no message when there is nothing to list.
+fn none_if_silent(r: Result<String, String>) -> Result<String, String> {
+    r.or_else(|e| if e.trim().is_empty() { Ok(String::new()) } else { Err(e) })
+}
+
 /// `pkexec` asks for the password through the desktop's polkit dialog.
 fn root(args: &[&str]) -> Result<String, String> {
     let _guard = SYSTEM_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -44,7 +49,12 @@ fn root(args: &[&str]) -> Result<String, String> {
 pub fn outdated(kind: &str) -> Result<Vec<App>, String> {
     Ok(match kind {
         "apt" => parse_apt_upgradable(&exec("apt", &["list", "--upgradable"], SCAN_TIMEOUT)?),
-        "pacman" => parse_pacman_upgrades(&exec("pacman", &["-Qu"], SCAN_TIMEOUT)?),
+        // `-Qu` only knows the last synced database; `checkupdates` (pacman-contrib) syncs a private
+        // copy first. Both exit non-zero with no output when nothing is outdated.
+        "pacman" => {
+            let out = if path("checkupdates").is_some() { exec("checkupdates", &[], UPGRADE_TIMEOUT) } else { exec("pacman", &["-Qu"], SCAN_TIMEOUT) };
+            parse_pacman_upgrades(&none_if_silent(out)?)
+        }
         "dnf" => {
             let mut apps = parse_dnf_upgrades(&exec("dnf", &["list", "--upgrades", "-q"], SCAN_TIMEOUT)?);
             fill_rpm_versions(&mut apps);
@@ -86,8 +96,9 @@ pub fn upgrade(kind: &str, name: &str) -> Result<(), String> {
     }
     match kind {
         "apt" => root(&["env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "--only-upgrade", "-y", name]),
-        // Arch does not support partial upgrades; this is the same as `pacman -S pkg`.
-        "pacman" => root(&["pacman", "-S", "--noconfirm", "--needed", name]),
+        // Arch has no partial upgrades and the scan used a fresh database, so sync and upgrade
+        // everything; later queue entries then find nothing left to do.
+        "pacman" => root(&["pacman", "-Syu", "--noconfirm"]),
         "dnf" => root(&["dnf", "upgrade", "-y", name]),
         "flatpak" => exec("flatpak", &["update", "-y", "--noninteractive", name], UPGRADE_TIMEOUT),
         // snapd asks polkit for the permission by itself.
@@ -314,6 +325,12 @@ mod tests {
         let apps = parse_pacman_upgrades("linux 6.9.1.arch1-1 -> 6.9.2.arch1-1\nfirefox 126.0-1 -> 127.0-1\nweird line\n");
         assert_eq!(rows(&apps), [("pacman:linux", "6.9.1.arch1-1", "6.9.2.arch1-1"), ("pacman:firefox", "126.0-1", "127.0-1")]);
         assert_eq!(parse_pairs("pacman", "git 2.45.1-1\n--evil 1\n", Source::Pacman, ' ').len(), 1);
+    }
+
+    #[test]
+    fn silent_failure_means_no_updates() {
+        assert_eq!(none_if_silent(Err(String::new())), Ok(String::new()));
+        assert_eq!(none_if_silent(Err("error: boom".into())), Err("error: boom".into()));
     }
 
     #[test]

@@ -48,7 +48,36 @@ Download the installer for your system from the [latest release](https://github.
 | Debian / Ubuntu / Mint | `Updateeer-<version>-linux-amd64.deb` |
 | Arch / Manjaro | `Updateeer-<version>-linux-x86_64.pkg.tar.zst` |
 
-The installers are not code-signed yet, so macOS and Windows will warn you the first time (macOS: right-click → Open; Windows: *More info* → *Run anyway*).
+### macOS
+
+1. Open the `.dmg` and drag **Updateeer** onto the **Applications** folder.
+2. The first time, right-click the app → **Open** (the installer is not notarized yet).
+3. Optional: the welcome screen asks for *App Management* permission so updates can replace apps.
+
+### Windows
+
+1. Run the `.msi` and follow the wizard.
+2. If SmartScreen warns you (the installer is not code-signed), choose **More info** → **Run anyway**.
+
+### Debian / Ubuntu / Mint
+
+```sh
+sudo apt install ./Updateeer-<version>-linux-amd64.deb
+```
+
+### Arch / Manjaro
+
+```sh
+sudo pacman -U Updateeer-<version>-linux-x86_64.pkg.tar.zst
+```
+
+For accurate pacman results install `pacman-contrib` (`sudo pacman -S pacman-contrib`): Updateeer then uses `checkupdates`, which syncs the package database without root.
+
+### Fedora and others
+
+There is no `.rpm` yet. [Build from source](#build-from-source) and copy `target/release/updateeer` to `~/.local/bin`.
+
+Updateeer does not update itself yet: when a newer version exists it tells you, and you install the new file the same way. Verify downloads with the SHA-256 list in each release's notes.
 
 ## Build from source
 
