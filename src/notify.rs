@@ -195,21 +195,71 @@ mod imp {
 
 #[cfg(not(target_os = "macos"))]
 mod imp {
-    use std::sync::mpsc;
+    use std::process::{Command, Stdio};
+    use std::sync::mpsc::{self, Sender};
 
     use eframe::egui;
 
     use super::Reply;
     use crate::model::App;
 
-    /// No system notifications on this OS yet.
-    pub struct Notifier;
+    /// Asks with a native two-button dialog (PowerShell on Windows, zenity or kdialog on Linux),
+    /// answered on a worker thread.
+    pub struct Notifier {
+        tx: Sender<Reply>,
+        ctx: egui::Context,
+    }
 
     impl Notifier {
-        pub fn new(_ctx: &egui::Context) -> (Self, mpsc::Receiver<Reply>) {
-            (Self, mpsc::channel().1)
+        pub fn new(ctx: &egui::Context) -> (Self, mpsc::Receiver<Reply>) {
+            let (tx, rx) = mpsc::channel();
+            (Self { tx, ctx: ctx.clone() }, rx)
         }
-        pub fn ask(&self, _apps: &[App]) {}
+
+        pub fn ask(&self, apps: &[App]) {
+            if apps.is_empty() || !super::supported() {
+                return;
+            }
+            let (title, body) = super::message(apps);
+            let ids: Vec<String> = apps.iter().map(|a| a.id.clone()).collect();
+            let yes = if apps.len() > 1 { "Actualizar todas" } else { "Actualizar ahora" };
+            let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+            std::thread::spawn(move || {
+                let reply = if confirm(&title, &body, yes) { Reply::UpdateNow(ids) } else { Reply::Later(ids) };
+                let _ = tx.send(reply);
+                ctx.request_repaint();
+            });
+        }
+    }
+
+    /// True when the user picked the "update" button.
+    #[cfg(windows)]
+    fn confirm(title: &str, body: &str, _yes: &str) -> bool {
+        let quote = |s: &str| format!("'{}'", s.replace('\'', "''"));
+        let script = format!(
+            "Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show({}, 'Updateeer', 'YesNo', 'Question')",
+            quote(&format!("{title}\n\n{body}\n\n¿Actualizar ahora?"))
+        );
+        let mut cmd = Command::new("powershell");
+        std::os::windows::process::CommandExt::creation_flags(&mut cmd, 0x0800_0000);
+        let out = cmd.args(["-NoProfile", "-NonInteractive", "-Command", &script]).stdin(Stdio::null()).stderr(Stdio::null()).output();
+        out.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "Yes")
+    }
+
+    #[cfg(not(windows))]
+    fn confirm(title: &str, body: &str, yes: &str) -> bool {
+        let text = format!("{title}\n\n{body}");
+        let run = |tool: &str, args: &[&str]| Command::new(tool).args(args).stdin(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success());
+        match tool().as_deref() {
+            Some("zenity") => run("zenity", &["--question", "--no-markup", "--title=Updateeer", "--icon-name=updateeer", &format!("--text={text}"), &format!("--ok-label={yes}"), "--cancel-label=Más tarde", "--timeout=600"]),
+            Some("kdialog") => run("kdialog", &["--title", "Updateeer", "--icon", "updateeer", "--yes-label", yes, "--no-label", "Más tarde", "--yesno", &text]),
+            _ => false,
+        }
+    }
+
+    #[cfg(not(windows))]
+    pub fn tool() -> Option<String> {
+        ["zenity", "kdialog"].into_iter().find(|t| ["/usr/bin", "/usr/local/bin", "/bin"].iter().any(|d| std::path::Path::new(d).join(t).is_file())).map(String::from)
     }
 }
 
@@ -232,8 +282,14 @@ pub fn message(apps: &[crate::model::App]) -> (String, String) {
     }
 }
 
+/// Whether this system can ask about open apps (and so whether automatic updates make sense).
 pub fn supported() -> bool {
-    cfg!(target_os = "macos")
+    #[cfg(windows)]
+    return true;
+    #[cfg(target_os = "macos")]
+    return true;
+    #[cfg(not(any(windows, target_os = "macos")))]
+    imp::tool().is_some()
 }
 
 #[cfg(test)]

@@ -30,6 +30,13 @@ fn installed_at(a: &App) -> Option<SystemTime> {
     let (kind, name) = a.id.split_once(':')?;
     let name = name.rsplit('/').next()?;
     match kind {
+        // Linux: when the package files landed on disk.
+        "apt" => ["", ":amd64", ":arm64", ":i386"].iter().find_map(|arch| fs::metadata(format!("/var/lib/dpkg/info/{name}{arch}.list")).ok()?.modified().ok()),
+        "pacman" => fs::metadata(format!("/var/lib/pacman/local/{name}-{}", a.from)).ok()?.modified().ok(),
+        "flatpak" => {
+            let user = std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share/flatpak/app").join(name));
+            [Some(PathBuf::from("/var/lib/flatpak/app").join(name)), user].into_iter().flatten().find_map(|p| fs::metadata(p).ok()?.modified().ok())
+        }
         "cask" => newest_birth(&prefix()?.join("Caskroom").join(name)),
         "formula" => newest_birth(&prefix()?.join("Cellar").join(name)),
         // The App Store replaces the bundle on update, so its modification time is the update.
