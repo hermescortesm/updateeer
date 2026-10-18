@@ -56,7 +56,7 @@ cargo build --release     # needs Rust 1.89 or newer
 cargo test
 ```
 
-Packaging scripts: `tools/package-macos.sh <target>`, `tools/package-deb.sh`, `packaging/windows/main.wxs` (WiX 5) and `packaging/arch/PKGBUILD`.
+Packaging scripts: `tools/package-macos.sh <target>` (needs `pip install dmgbuild`; builds the drag-to-Applications installer), `tools/package-deb.sh`, `packaging/windows/main.wxs` (WiX 5) and `packaging/arch/PKGBUILD`.
 
 ## Privacy
 

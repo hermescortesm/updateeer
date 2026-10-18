@@ -57,11 +57,15 @@ PLIST
 codesign --force --deep --sign - "$app"
 
 mkdir -p dist
-stage="$work/dmg"
-mkdir "$stage"
-cp -R "$app" "$stage/"
-ln -s /Applications "$stage/Applications"
 out="dist/Updateeer-$version-macos-$label.dmg"
 rm -f "$out"
-hdiutil create -quiet -volname "Updateeer $version" -srcfolder "$stage" -ov -format UDZO "$out"
+
+# Classic installer window: the app on the left, an arrow, the Applications folder on the right.
+# dmgbuild writes the window layout itself (no Finder scripting): `pip install dmgbuild`.
+dmgbuild=${DMGBUILD:-$(command -v dmgbuild || true)}
+if [[ -z $dmgbuild ]]; then
+  echo "dmgbuild not found: pip install dmgbuild (or set DMGBUILD=/path/to/dmgbuild)" >&2
+  exit 1
+fi
+"$dmgbuild" -s packaging/macos/dmg-settings.py -D app="$app" -D icon="$app/Contents/Resources/Updateeer.icns" "Updateeer" "$out" >/dev/null
 echo "$out"
