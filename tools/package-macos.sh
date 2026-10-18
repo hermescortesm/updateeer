@@ -2,7 +2,13 @@
 # Builds Updateeer.app and a .dmg for one target and leaves them in dist/.
 #   tools/package-macos.sh aarch64-apple-darwin   ->  dist/Updateeer-<version>-macos-arm64.dmg
 #   tools/package-macos.sh x86_64-apple-darwin    ->  dist/Updateeer-<version>-macos-x86_64.dmg
-# Needs the rust target (`rustup target add <target>`). The app is ad-hoc signed, not notarized.
+# Needs the rust target (`rustup target add <target>`).
+#
+# Signing (optional): by default the app is ad-hoc signed and not notarized. With an Apple
+# Developer ID certificate in the keychain:
+#   SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"   signs the app and the dmg with the hardened runtime
+#   NOTARY_PROFILE=updateeer      notarizes the dmg and staples the ticket; the profile is created once with
+#                                 `xcrun notarytool store-credentials updateeer --apple-id ... --team-id ...`
 set -euo pipefail
 cd "${0:A:h}/.."
 
@@ -54,7 +60,13 @@ cat > "$app/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-codesign --force --deep --sign - "$app"
+sign=${SIGN_IDENTITY:--}
+if [[ $sign == - ]]; then
+  codesign --force --deep --sign - "$app"
+else
+  codesign --force --options runtime --timestamp --sign "$sign" "$app"
+  codesign --verify --strict --verbose=2 "$app"
+fi
 
 mkdir -p dist
 out="dist/Updateeer-$version-macos-$label.dmg"
@@ -68,4 +80,12 @@ if [[ -z $dmgbuild ]]; then
   exit 1
 fi
 "$dmgbuild" -s packaging/macos/dmg-settings.py -D app="$app" -D icon="$app/Contents/Resources/Updateeer.icns" "Updateeer" "$out" >/dev/null
+if [[ $sign != - ]]; then
+  codesign --force --timestamp --sign "$sign" "$out"
+  if [[ -n ${NOTARY_PROFILE:-} ]]; then
+    xcrun notarytool submit "$out" --keychain-profile "$NOTARY_PROFILE" --wait
+    xcrun stapler staple "$out"
+    spctl --assess --type open --context context:primary-signature --verbose "$out"
+  fi
+fi
 echo "$out"
