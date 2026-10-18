@@ -41,11 +41,13 @@ pub struct Settings {
     pub auto_update: bool,
     /// The welcome screen (permissions) was seen and closed.
     pub onboarded: bool,
+    /// Look for a newer Updateeer on GitHub with every search.
+    pub check_updates: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { auto: true, hours: 6, theme: ThemeMode::System, hide_setup: false, auto_update: false, onboarded: false }
+        Self { auto: true, hours: 6, theme: ThemeMode::System, hide_setup: false, auto_update: false, onboarded: false, check_updates: true }
     }
 }
 
@@ -71,6 +73,7 @@ impl Settings {
         Self {
             auto: v["auto"].as_bool().unwrap_or(d.auto),
             auto_update: v["auto_update"].as_bool().unwrap_or(d.auto_update),
+            check_updates: v["check_updates"].as_bool().unwrap_or(d.check_updates),
             onboarded: v["onboarded"].as_bool().unwrap_or(d.onboarded),
             hide_setup: v["hide_setup"].as_bool().unwrap_or(d.hide_setup),
             theme: v["theme"].as_str().map_or(d.theme, ThemeMode::from_name),
@@ -84,7 +87,7 @@ impl Settings {
         if let Some(dir) = p.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        let _ = std::fs::write(p, json!({ "auto": self.auto, "hours": self.hours, "theme": self.theme.name(), "hide_setup": self.hide_setup, "auto_update": self.auto_update, "onboarded": self.onboarded }).to_string());
+        let _ = std::fs::write(p, json!({ "auto": self.auto, "hours": self.hours, "theme": self.theme.name(), "hide_setup": self.hide_setup, "auto_update": self.auto_update, "onboarded": self.onboarded, "check_updates": self.check_updates }).to_string());
     }
 }
 
@@ -94,7 +97,7 @@ mod tests {
 
     #[test]
     fn parse_validates_and_defaults() {
-        assert_eq!(Settings::parse(r#"{"auto":false,"hours":12,"theme":"light"}"#), Settings { auto: false, hours: 12, theme: ThemeMode::Light, hide_setup: false, auto_update: false, onboarded: false });
+        assert_eq!(Settings::parse(r#"{"auto":false,"hours":12,"theme":"light"}"#), Settings { auto: false, hours: 12, theme: ThemeMode::Light, hide_setup: false, auto_update: false, onboarded: false, check_updates: true });
         assert_eq!(Settings::parse(r#"{"hours":7}"#), Settings::default());
         assert_eq!(Settings::parse("garbage"), Settings::default());
     }

@@ -414,12 +414,15 @@ impl UpdatesApp {
                         cell(ui, rect, right - 290.0, right - 160.0, Layout::right_to_left(Align::Center), |ui| {
                             ui.label(RichText::new(model::date(entry.at)).monospace().size(12.5).color(faint()));
                         });
-                        cell(ui, rect, left + 290.0, right - 300.0, Layout::left_to_right(Align::Center), |ui| {
+                        let (vx0, vx1) = (left + 290.0, right - 300.0);
+                        // Two versions and an arrow share this cell: 8px gaps, 14px arrow, ~8px per mono char.
+                        let max_chars = (((vx1 - vx0 - 30.0) / 2.0) / 8.0).max(6.0) as usize;
+                        cell(ui, rect, vx0, vx1, Layout::left_to_right(Align::Center), |ui| {
                             ui.spacing_mut().item_spacing.x = 8.0;
-                            ui.label(RichText::new(&app.from).monospace().size(13.0).color(faint()));
+                            ui.label(RichText::new(widgets::short_version(&app.from, max_chars)).monospace().size(13.0).color(faint())).on_hover_text(&app.from);
                             let (r, _) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
                             widgets::icon(ui, r, Icon::Arrow, faint(), 2.2);
-                            ui.label(RichText::new(&app.to).monospace().size(13.0).color(accent_text()));
+                            ui.label(RichText::new(widgets::short_version(&app.to, max_chars)).monospace().size(13.0).color(accent_text())).on_hover_text(&app.to);
                         });
                         cell(ui, rect, right - 150.0, right, Layout::right_to_left(Align::Center), |ui| match &entry.error {
                             None => {
@@ -518,6 +521,9 @@ impl UpdatesApp {
                     widgets::toggle(ui, &mut self.settings.auto_update);
                 });
             }
+            setting_row(ui, "Avisar de versiones nuevas de Updateeer", "Consulta GitHub al buscar actualizaciones. Es la única conexión que hace la app por su cuenta.", |ui| {
+                widgets::toggle(ui, &mut self.settings.check_updates);
+            });
             setting_row(ui, "Frecuencia", "Cada cuánto se repite la búsqueda.", |ui| {
                 Frame::new()
                     .fill(field())
@@ -561,7 +567,16 @@ impl UpdatesApp {
                     want_welcome = widgets::button(ui, None, "Revisar", Kind::Soft, 34.0, true).clicked();
                 });
             }
-            setting_row(ui, "Versión", "Updateeer", |ui| {
+            let version_note = match &self.new_release {
+                Some(r) => format!("Hay una versión nueva: {}", r.version),
+                None => "Updateeer".to_string(),
+            };
+            setting_row(ui, "Versión", &version_note, |ui| {
+                if let Some(r) = &self.new_release
+                    && widgets::button(ui, Some(Icon::Download), "Descargar", Kind::Primary, 34.0, true).clicked()
+                {
+                    crate::selfupdate::open(&r.url);
+                }
                 ui.label(RichText::new(env!("CARGO_PKG_VERSION")).monospace().size(13.0).color(text_2()));
             });
             if cfg!(target_os = "macos") {
