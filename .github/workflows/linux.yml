@@ -57,7 +57,7 @@ jobs:
           git archive --prefix="updateeer-$version/" -o "/build/updateeer-$version.tar.gz" HEAD
           cp packaging/arch/PKGBUILD /build/
           chown -R builder /build
-          su builder -c "cd /build && UPDATEEER_VERSION=$version makepkg --noconfirm -f"
+          su builder -c "cd /build && UPDATEEER_VERSION=$version makepkg --noconfirm --nodeps -f"
           for f in /build/*.pkg.tar.zst; do cp "$f" "dist/Updateeer-$version-linux-$(uname -m).pkg.tar.zst"; done
           sha256sum dist/*
 
