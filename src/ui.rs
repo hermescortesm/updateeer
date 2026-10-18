@@ -35,6 +35,8 @@ pub enum Page {
     Installed,
     History,
     Settings,
+    /// First-run checklist (macOS): permissions and tools.
+    Welcome,
     /// One app's full data; `back` says where it was opened from.
     Detail,
 }
@@ -126,9 +128,10 @@ pub struct UpdatesApp {
     update_after_scan: Vec<String>,
     last_auto: Instant,
     /// (Homebrew found, mas found).
-    tools: (bool, bool),
+    pub(crate) tools: (bool, bool),
+    pub(crate) access: crate::permissions::Access,
     mas_install: Option<Receiver<Result<(), String>>>,
-    setup_error: Option<String>,
+    pub(crate) setup_error: Option<String>,
     was_focused: bool,
     /// Frames left before hiding the window (started with `--background`).
     hide_in: Option<u8>,
@@ -145,6 +148,7 @@ impl UpdatesApp {
         let (done_tx, done_rx) = mpsc::channel();
         let (icon_tx, icon_rx) = mpsc::channel();
         let (notifier, notify_rx) = Notifier::new(&ctx);
+        let settings = Settings::load();
         let mut app = Self {
             apps: Vec::new(),
             selected: HashSet::new(),
@@ -165,8 +169,8 @@ impl UpdatesApp {
             done_tx,
             done_rx,
             last_scan: Instant::now(),
-            page: Page::Updates,
-            settings: Settings::load(),
+            page: if cfg!(target_os = "macos") && !settings.onboarded { Page::Welcome } else { Page::Updates },
+            settings,
             installed: Vec::new(),
             installed_rx: None,
             installed_stale: true,
@@ -180,6 +184,7 @@ impl UpdatesApp {
             update_after_scan: Vec::new(),
             last_auto: Instant::now(),
             tools: detect_tools(),
+            access: crate::permissions::app_management(),
             mas_install: None,
             setup_error: None,
             was_focused: true,
@@ -366,6 +371,7 @@ impl eframe::App for UpdatesApp {
         let focused = ui.input(|i| i.focused);
         if focused && !self.was_focused {
             self.tools = detect_tools();
+            self.access = crate::permissions::app_management();
         }
         self.was_focused = focused;
         self.poll_mas_install();
@@ -422,8 +428,10 @@ impl eframe::App for UpdatesApp {
                 Page::Updates => self.main(ui),
                 Page::Installed => self.installed_page(ui),
                 Page::History => self.history_page(ui),
-                Page::Settings => self.settings_page(ui),
-                Page::Detail => self.detail_page(ui),
+                // Long pages scroll as a whole; the list pages scroll their rows under a fixed header.
+                Page::Settings => ScrollArea::vertical().auto_shrink(false).show(ui, |ui| self.settings_page(ui)).inner,
+                Page::Welcome => ScrollArea::vertical().auto_shrink(false).show(ui, |ui| self.welcome_page(ui)).inner,
+                Page::Detail => ScrollArea::vertical().auto_shrink(false).show(ui, |ui| self.detail_page(ui)).inner,
             });
     }
 }
@@ -516,6 +524,11 @@ impl UpdatesApp {
                     ui.label(RichText::new(text).size(12.0).color(faint()));
                     ui.label(RichText::new("Búsqueda automática").size(12.0).family(semibold()).color(text_2()));
                 });
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                ui.add_space(6.0);
+                ui.label(RichText::new(format!("Versión {}", env!("CARGO_PKG_VERSION"))).size(12.0).color(faint()));
+            });
         });
     }
 
@@ -757,22 +770,31 @@ impl UpdatesApp {
             self.settings.save();
         }
         if install {
-            self.setup_error = None;
-            if !brew {
-                if let Err(e) = setup::open_homebrew_installer() {
-                    self.setup_error = Some(e);
-                }
-            } else {
-                let (tx, ctx) = (mpsc::channel(), self.ctx.clone());
-                let sender = tx.0;
-                thread::spawn(move || {
-                    let _ = sender.send(setup::install_mas());
-                    ctx.request_repaint();
-                });
-                self.mas_install = Some(tx.1);
-            }
+            self.install_tool(brew);
         }
         true
+    }
+
+    /// Opens the Homebrew installer, or installs `mas` once Homebrew is there.
+    pub(crate) fn mas_install_running(&self) -> bool {
+        self.mas_install.is_some()
+    }
+
+    pub(crate) fn install_tool(&mut self, brew_installed: bool) {
+        self.setup_error = None;
+        if !brew_installed {
+            if let Err(e) = setup::open_homebrew_installer() {
+                self.setup_error = Some(e);
+            }
+        } else {
+            let (tx, ctx) = (mpsc::channel(), self.ctx.clone());
+            let sender = tx.0;
+            thread::spawn(move || {
+                let _ = sender.send(setup::install_mas());
+                ctx.request_repaint();
+            });
+            self.mas_install = Some(tx.1);
+        }
     }
 
     fn batch_banner(&mut self, ui: &mut Ui) {
@@ -916,7 +938,16 @@ fn row_inner(ui: &mut Ui, app: &App, status: Status, error: Option<&str>, select
         ui.add_space(15.0);
         ui.spacing_mut().item_spacing.y = 3.0;
         ui.add(egui::Label::new(RichText::new(&app.name).size(14.5).family(semibold())).truncate());
-        ui.add(egui::Label::new(RichText::new(&app.vendor).size(12.5).color(faint())).truncate());
+        // A failed row says why right under the name (the full text is on the button's tooltip).
+        match (status, error) {
+            (Status::Failed, Some(e)) => {
+                let first = e.lines().find(|l| !l.trim().is_empty()).unwrap_or(e);
+                ui.add(egui::Label::new(RichText::new(format!("Falló: {first}")).size(12.5).color(Color32::from_rgb(0xFF, 0x7A, 0x6B))).truncate()).on_hover_text(e);
+            }
+            _ => {
+                ui.add(egui::Label::new(RichText::new(&app.vendor).size(12.5).color(faint())).truncate());
+            }
+        }
     });
 
     let (vx0, vx1) = (left + 310.0, chip_x - 14.0);

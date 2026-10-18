@@ -219,11 +219,9 @@ impl UpdatesApp {
             rows.push(("Último error", e.to_string()));
         }
         card(ui, |ui| {
-            ScrollArea::vertical().auto_shrink(true).show(ui, |ui| {
-                for (title, value) in &rows {
-                    value_row(ui, title, value);
-                }
-            });
+            for (title, value) in &rows {
+                value_row(ui, title, value);
+            }
         });
     }
 
@@ -271,10 +269,78 @@ impl UpdatesApp {
         });
     }
 
+    /// First-run checklist (macOS): the permission that lets Updateeer modify apps, and the tools it uses.
+    pub(crate) fn welcome_page(&mut self, ui: &mut Ui) {
+        use crate::permissions::Access;
+        header(ui, "Bienvenido a Updateeer", "Antes de actualizar nada, comprueba que todo está listo");
+        let (brew, mas) = self.tools;
+        let access = self.access;
+        let installing = self.mas_install_running();
+        let (mut open_perm, mut recheck, mut install_brew, mut install_mas, mut done) = (false, false, false, false, false);
+        let status = |ui: &mut Ui, text: &str, ok: bool| {
+            ui.label(RichText::new(text).size(13.0).family(semibold()).color(if ok { accent_text() } else { muted() }));
+        };
+        card(ui, |ui| {
+            setting_row(ui, "Modificar apps", "macOS pide el permiso «Gestión de apps» para que Updateeer pueda actualizar las apps de Aplicaciones. Actívalo en Ajustes del Sistema → Privacidad y seguridad.", |ui| {
+                if access == Access::Granted {
+                    status(ui, "Listo", true);
+                } else {
+                    open_perm = widgets::button(ui, None, "Abrir ajustes", Kind::Primary, 34.0, true).clicked();
+                    recheck = widgets::button(ui, None, "Comprobar", Kind::Soft, 34.0, true).clicked();
+                    status(ui, if access == Access::Denied { "Falta" } else { "Sin comprobar" }, false);
+                }
+            });
+            setting_row(ui, "Homebrew", "Lo usa para buscar y actualizar apps y herramientas. Se instala desde Terminal y pide tu contraseña.", |ui| {
+                if brew {
+                    status(ui, "Instalado", true);
+                } else {
+                    install_brew = widgets::button(ui, None, "Instalar Homebrew", Kind::Primary, 34.0, true).clicked();
+                    status(ui, "Falta", false);
+                }
+            });
+            setting_row(ui, "mas (App Store)", "Herramienta pequeña, se instala con Homebrew. Sin ella no se ven las actualizaciones de la App Store.", |ui| {
+                if mas {
+                    status(ui, "Instalado", true);
+                } else {
+                    let label = if installing { "Instalando…" } else { "Instalar mas" };
+                    install_mas = widgets::button(ui, None, label, Kind::Primary, 34.0, brew && !installing).clicked();
+                    status(ui, if brew { "Falta" } else { "Necesita Homebrew" }, false);
+                }
+            });
+        });
+        ui.add_space(14.0);
+        if let Some(e) = &self.setup_error {
+            ui.label(RichText::new(e).size(13.0).color(muted()));
+            ui.add_space(10.0);
+        }
+        ui.horizontal(|ui| {
+            done = widgets::button(ui, None, "Continuar", Kind::Primary, 40.0, true).clicked();
+            ui.label(RichText::new("Puedes volver aquí desde Ajustes → Permisos.").size(12.5).color(faint()));
+        });
+        if open_perm {
+            crate::permissions::open_settings();
+        }
+        if recheck {
+            self.access = crate::permissions::app_management();
+        }
+        if install_brew {
+            self.install_tool(false);
+        }
+        if install_mas {
+            self.install_tool(true);
+        }
+        if done {
+            self.settings.onboarded = true;
+            self.settings.save();
+            self.page = Page::Updates;
+        }
+    }
+
     pub(crate) fn settings_page(&mut self, ui: &mut Ui) {
         header(ui, "Ajustes", "Cómo busca Updateeer");
         let before = self.settings;
         let mut want_login = None;
+        let mut want_welcome = false;
         card(ui, |ui| {
             setting_row(ui, "Búsqueda automática", "Busca actualizaciones sola mientras la app esté abierta.", |ui| {
                 widgets::toggle(ui, &mut self.settings.auto);
@@ -322,6 +388,11 @@ impl UpdatesApp {
                     });
                 });
             });
+            if cfg!(target_os = "macos") {
+                setting_row(ui, "Permisos", "Gestión de apps, Homebrew y mas: lo que necesita para actualizar.", |ui| {
+                    want_welcome = widgets::button(ui, None, "Revisar", Kind::Soft, 34.0, true).clicked();
+                });
+            }
             setting_row(ui, "Versión", "Updateeer", |ui| {
                 ui.label(RichText::new(env!("CARGO_PKG_VERSION")).monospace().size(13.0).color(text_2()));
             });
@@ -348,6 +419,10 @@ impl UpdatesApp {
             value_row(ui, "Licencia", "MIT — gratis para usar, copiar y modificar");
             value_row(ui, "Código fuente", "github.com/hermescortesm/updateeer");
         });
+        if want_welcome {
+            self.access = crate::permissions::app_management();
+            self.page = Page::Welcome;
+        }
         if let Some(on) = want_login {
             self.set_login(on);
         }
