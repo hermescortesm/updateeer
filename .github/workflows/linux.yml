@@ -5,6 +5,10 @@ on:
     branches: [dev]
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      release:
+        description: Existing release tag to attach the Arch package to (e.g. v0.1.2)
+        required: false
 
 permissions:
   contents: write
@@ -58,7 +62,7 @@ jobs:
           cp packaging/arch/PKGBUILD /build/
           chown -R builder /build
           su builder -c "cd /build && UPDATEEER_VERSION=$version makepkg --noconfirm --nodeps -f"
-          for f in /build/*.pkg.tar.zst; do cp "$f" "dist/Updateeer-$version-linux-$(uname -m).pkg.tar.zst"; done
+          cp "/build/updateeer-$version-1-$(uname -m).pkg.tar.zst" "dist/Updateeer-$version-linux-$(uname -m).pkg.tar.zst"
           sha256sum dist/*
 
       - uses: actions/upload-artifact@v4
@@ -67,9 +71,10 @@ jobs:
           path: dist/*.pkg.tar.zst
 
       - name: Attach to the release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.release != ''
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release || github.ref_name }}
         run: |
-          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --title "Updateeer $GITHUB_REF_NAME" --notes "See the assets below."
-          gh release upload "$GITHUB_REF_NAME" dist/*.pkg.tar.zst --clobber
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "Updateeer $GITHUB_REF_NAME" --notes "See the assets below."
+          gh release upload "$TAG" dist/*.pkg.tar.zst --clobber

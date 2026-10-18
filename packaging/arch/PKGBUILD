@@ -11,6 +11,7 @@ license=('custom')
 depends=('libgl' 'libxkbcommon' 'polkit')
 optdepends=('wayland: Wayland session' 'libx11: X11 session' 'flatpak: Flatpak updates' 'snapd: Snap updates')
 makedepends=('rust')
+options=('!debug')
 source=("$pkgname-$pkgver.tar.gz")
 sha256sums=('SKIP')
 
