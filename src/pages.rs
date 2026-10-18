@@ -572,7 +572,7 @@ impl UpdatesApp {
             let installing = self.self_update_rx.is_some();
             let version_note = match (&self.new_release, &self.self_update_error) {
                 (_, Some(e)) => format!("No se pudo actualizar: {e}"),
-                (Some(_), _) if installing => "Descargando e instalando… se te pedirá la contraseña".to_string(),
+                (Some(_), _) if installing => "Descargando e instalando… la app se reiniciará sola".to_string(),
                 (Some(r), _) => format!("Hay una versión nueva: {}", r.version),
                 _ => "Updateeer".to_string(),
             };
