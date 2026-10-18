@@ -1,5 +1,5 @@
 //! Runs the actual update for an app id (`cask:<token>`, `formula:<name>` or `mas:<number>`).
-use crate::{mas, winpkg};
+use crate::{linuxpkg, mas, winpkg};
 use crate::scan::{brew, safe_token, UPGRADE_TIMEOUT};
 
 fn args(id: &str) -> Option<[&str; 3]> {
@@ -21,6 +21,9 @@ pub fn run(id: &str) -> Result<(), String> {
     }
     if let Some((kind @ ("winget" | "scoop" | "choco"), name)) = id.split_once(':') {
         return winpkg::upgrade(kind, name);
+    }
+    if let Some((kind @ ("apt" | "pacman" | "dnf" | "flatpak" | "snap"), name)) = id.split_once(':') {
+        return linuxpkg::upgrade(kind, name);
     }
     let args = args(id).ok_or_else(|| format!("id no soportado: {id}"))?;
     brew(&args, UPGRADE_TIMEOUT, false).map(|_| ())

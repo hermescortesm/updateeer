@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Updateeer
+Comment=Keep your apps up to date
+Exec=updateeer
+Icon=updateeer
+Terminal=false
+Categories=System;Utility;
+StartupWMClass=updateeer

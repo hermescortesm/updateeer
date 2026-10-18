@@ -1,0 +1,27 @@
+# Maintainer: Hermes Cortes <admin@hermescortes.com>
+# For the AUR, replace the source with the release tarball:
+#   source=("$pkgname-$pkgver.tar.gz::https://github.com/hermescortesm/updateeer/archive/v$pkgver.tar.gz")
+pkgname=updateeer
+pkgver=${UPDATEEER_VERSION:?set UPDATEEER_VERSION}
+pkgrel=1
+pkgdesc='Keeps your installed apps up to date'
+arch=('x86_64' 'aarch64')
+url='https://github.com/hermescortesm/updateeer'
+license=('custom')
+depends=('libgl' 'libxkbcommon' 'polkit')
+optdepends=('wayland: Wayland session' 'libx11: X11 session' 'flatpak: Flatpak updates' 'snapd: Snap updates')
+makedepends=('rust')
+source=("$pkgname-$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+  cd "$pkgname-$pkgver"
+  cargo build --release --locked
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  install -Dm755 target/release/updateeer "$pkgdir/usr/bin/updateeer"
+  install -Dm644 packaging/linux/updateeer.desktop "$pkgdir/usr/share/applications/updateeer.desktop"
+  install -Dm644 assets/icon.png "$pkgdir/usr/share/icons/hicolor/256x256/apps/updateeer.png"
+}

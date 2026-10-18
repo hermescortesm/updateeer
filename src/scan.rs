@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-use crate::{local, mas, winpkg};
+use crate::{linuxpkg, local, mas, winpkg};
 use crate::model::{App, Source};
 
 const BREW_PATHS: [&str; 2] = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"];
@@ -136,6 +136,11 @@ fn sources(installed: bool) -> Vec<SourceResult> {
             ("Scoop", winpkg::scoop_path().map(|_| if installed { winpkg::scoop_installed() } else { winpkg::scoop_outdated() })),
             ("Chocolatey", winpkg::choco_path().map(|_| if installed { winpkg::choco_installed() } else { winpkg::choco_outdated() })),
         ]
+    } else if cfg!(target_os = "linux") {
+        ["apt", "pacman", "dnf", "flatpak", "snap"]
+            .into_iter()
+            .map(|k| (k, linuxpkg::path(k).map(|_| if installed { linuxpkg::installed(k) } else { linuxpkg::outdated(k) })))
+            .collect()
     } else {
         vec![
             ("Homebrew", brew_path().map(|_| if installed { installed_brew() } else { scan_brew() })),
@@ -161,7 +166,7 @@ fn merge(sources: Vec<SourceResult>) -> Result<Found, String> {
     }
     let text = errors.iter().map(|(n, e)| format!("{n}: {e}")).collect::<Vec<_>>().join(" · ");
     if !worked {
-        return Err(if text.is_empty() { "No se encontró ningún gestor de paquetes compatible (Homebrew, winget, Scoop o Chocolatey)".into() } else { text });
+        return Err(if text.is_empty() { "No se encontró ningún gestor de paquetes compatible (Homebrew, winget, Scoop, Chocolatey, apt, pacman, dnf, Flatpak o Snap)".into() } else { text });
     }
     local::enrich(&mut apps);
     apps.sort_by_key(|a| a.name.to_lowercase());

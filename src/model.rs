@@ -8,6 +8,11 @@ pub enum Source {
     Winget,
     Scoop,
     Chocolatey,
+    Apt,
+    Pacman,
+    Dnf,
+    Flatpak,
+    Snap,
 }
 
 impl Source {
@@ -19,6 +24,11 @@ impl Source {
             "winget" => Source::Winget,
             "scoop" => Source::Scoop,
             "choco" => Source::Chocolatey,
+            "apt" => Source::Apt,
+            "pacman" => Source::Pacman,
+            "dnf" => Source::Dnf,
+            "flatpak" => Source::Flatpak,
+            "snap" => Source::Snap,
             _ => Source::Homebrew,
         }
     }
@@ -31,6 +41,11 @@ impl Source {
             Source::Winget => "winget",
             Source::Scoop => "Scoop",
             Source::Chocolatey => "Chocolatey",
+            Source::Apt => "apt",
+            Source::Pacman => "pacman",
+            Source::Dnf => "dnf",
+            Source::Flatpak => "Flatpak",
+            Source::Snap => "Snap",
         }
     }
 }
