@@ -117,6 +117,8 @@ mod tests {
         assert!(needs_admin(&App { source: Source::Apt, ..formula("curl") }));
     }
 
+    // A cask without a bundle on disk is only "unknown" where bundles exist.
+    #[cfg(target_os = "macos")]
     #[test]
     fn app_without_a_known_bundle_is_unknown() {
         let mut app = formula("x");
