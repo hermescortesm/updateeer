@@ -63,6 +63,19 @@ pub fn choco_installed() -> Result<Vec<App>, String> {
     Ok(parse_choco_list(&exec(choco_path(), &["list", "-l", "-r"], SCAN_TIMEOUT)?))
 }
 
+/// Installs a winget package; blocks, so call it from a worker thread.
+pub fn install(name: &str) -> Result<(), String> {
+    if !safe_name(name) {
+        return Err(format!("id no soportado: winget:{name}"));
+    }
+    exec(
+        winget_path(),
+        &["install", "--id", name, "--exact", "--silent", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"],
+        UPGRADE_TIMEOUT,
+    )
+    .map(|_| ())
+}
+
 /// Blocks until the manager finishes; call it from a worker thread.
 pub fn upgrade(kind: &str, name: &str) -> Result<(), String> {
     if !safe_name(name) {

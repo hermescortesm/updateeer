@@ -1,7 +1,9 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod autostart;
+mod catalog;
 mod history;
+mod discover;
 mod icons;
 mod linuxpkg;
 mod local;

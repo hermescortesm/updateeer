@@ -14,6 +14,7 @@ pub enum Icon {
     Refresh,
     Arrow,
     Check,
+    Compass,
 }
 
 /// Draws a 24x24 stroke icon scaled to `rect`.
@@ -68,6 +69,10 @@ pub fn icon(ui: &Ui, rect: Rect, kind: Icon, color: Color32, width: f32) {
         Icon::Arrow => {
             line(&[(5.0, 12.0), (19.0, 12.0)]);
             line(&[(13.0, 6.0), (19.0, 12.0), (13.0, 18.0)]);
+        }
+        Icon::Compass => {
+            painter.circle_stroke(p(12.0, 12.0), 8.5 * s, stroke);
+            line(&[(15.5, 8.5), (13.2, 13.2), (8.5, 15.5), (10.8, 10.8), (15.5, 8.5)]);
         }
         Icon::Check => line(&[(5.0, 12.5), (9.5, 17.0), (19.0, 7.5)]),
     }

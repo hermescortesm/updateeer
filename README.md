@@ -16,6 +16,7 @@
 - **Updates from a queue.** Update one app, a selection, or everything at once. Two updates run in parallel, failed ones are retried once, and each row shows its progress.
 - **Cancel any time.** Cancelling stops the running updates (and everything they launched) and puts the apps back to "available".
 - **Shows everything installed.** An *Installed* page lists every app with its source, version and install date, including apps you downloaded by hand (macOS).
+- **Discover new apps.** A curated catalog of about 100 popular apps (browsers, development, utilities, communication, media, productivity, games) you can install with one click, plus an online search through Homebrew, winget, Flathub and apt.
 - **Keeps a history.** Every update, with its date and result, survives restarts.
 - **Detail page for each app.** Versions, source, vendor, size and dates in one place.
 - **Search, filter and sort.** By name, source (App Store, Homebrew, winget, apt, Flatpak…), type (apps or command-line tools), install date and more.

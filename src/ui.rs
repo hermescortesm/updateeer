@@ -33,6 +33,8 @@ enum Filter {
 pub enum Page {
     Updates,
     Installed,
+    /// Catalog and search to install new apps.
+    Discover,
     History,
     Settings,
     /// First-run checklist (macOS): permissions and tools.
@@ -115,6 +117,7 @@ pub struct UpdatesApp {
     pub(crate) settings: Settings,
     pub(crate) installed: Vec<App>,
     pub(crate) installed_rx: Option<Scan>,
+    pub(crate) discover: crate::pages::Discover,
     pub(crate) installed_stale: bool,
     pub(crate) installed_error: Option<String>,
     pub(crate) history: Vec<Entry>,
@@ -173,6 +176,7 @@ impl UpdatesApp {
             settings,
             installed: Vec::new(),
             installed_rx: None,
+            discover: crate::pages::Discover::new(),
             installed_stale: true,
             installed_error: None,
             history: history::load(),
@@ -427,6 +431,7 @@ impl eframe::App for UpdatesApp {
             .show(ui, |ui| match self.page {
                 Page::Updates => self.main(ui),
                 Page::Installed => self.installed_page(ui),
+                Page::Discover => self.discover_page(ui),
                 Page::History => self.history_page(ui),
                 // Long pages scroll as a whole; the list pages scroll their rows under a fixed header.
                 Page::Settings => ScrollArea::vertical().auto_shrink(false).show(ui, |ui| self.settings_page(ui)).inner,
@@ -501,6 +506,7 @@ impl UpdatesApp {
         for (page, icon, label) in [
             (Page::Updates, Icon::Download, "Actualizaciones"),
             (Page::Installed, Icon::Grid, "Instaladas"),
+            (Page::Discover, Icon::Compass, "Descubrir"),
             (Page::History, Icon::Clock, "Historial"),
             (Page::Settings, Icon::Sliders, "Ajustes"),
         ] {
@@ -830,7 +836,7 @@ impl UpdatesApp {
 }
 
 /// Caption plus a dropdown over `options`.
-fn combo<T: PartialEq + Copy>(ui: &mut Ui, caption: &str, value: &mut T, options: &[(T, &str)]) {
+pub(crate) fn combo<T: PartialEq + Copy>(ui: &mut Ui, caption: &str, value: &mut T, options: &[(T, &str)]) {
     ui.label(RichText::new(caption).size(12.5).color(faint()));
     let current = options.iter().find(|o| o.0 == *value).map_or("", |o| o.1);
     egui::ComboBox::from_id_salt(caption).selected_text(current).width(150.0).show_ui(ui, |ui| {
