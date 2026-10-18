@@ -46,6 +46,7 @@ Download the installer for your system from the [latest release](https://github.
 | macOS (Intel) | `Updateeer-<version>-macos-x86_64.dmg` |
 | Windows (x64) | `Updateeer-<version>-windows-x64.msi` |
 | Debian / Ubuntu / Mint | `Updateeer-<version>-linux-amd64.deb` |
+| Fedora / RHEL / openSUSE | `Updateeer-<version>-linux-x86_64.rpm` |
 | Arch / Manjaro | `Updateeer-<version>-linux-x86_64.pkg.tar.zst` |
 
 ### macOS
@@ -73,9 +74,13 @@ sudo pacman -U Updateeer-<version>-linux-x86_64.pkg.tar.zst
 
 For accurate pacman results install `pacman-contrib` (`sudo pacman -S pacman-contrib`): Updateeer then uses `checkupdates`, which syncs the package database without root.
 
-### Fedora and others
+### Fedora / RHEL
 
-There is no `.rpm` yet. [Build from source](#build-from-source) and copy `target/release/updateeer` to `~/.local/bin`.
+```sh
+sudo dnf install ./Updateeer-<version>-linux-x86_64.rpm
+```
+
+Other distributions: [build from source](#build-from-source) and copy `target/release/updateeer` to `~/.local/bin`.
 
 Updateeer does not update itself yet: when a newer version exists it tells you, and you install the new file the same way. Verify downloads with the SHA-256 list in each release's notes.
 
@@ -86,7 +91,7 @@ cargo build --release     # needs Rust 1.89 or newer
 cargo test
 ```
 
-Packaging scripts: `tools/package-macos.sh <target>` (needs `pip install dmgbuild`; builds the drag-to-Applications installer), `tools/package-deb.sh`, `packaging/windows/main.wxs` (WiX 5) and `packaging/arch/PKGBUILD`.
+Packaging scripts: `tools/package-macos.sh <target>` (needs `pip install dmgbuild`; builds the drag-to-Applications installer), `tools/package-deb.sh`, `tools/package-rpm.sh`, `packaging/windows/main.wxs` (WiX 5) and `packaging/arch/PKGBUILD`.
 
 ## Privacy
 
