@@ -1,4 +1,4 @@
-<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
   <Package Name="Updateeer" Manufacturer="Hermes Cortes" Version="$(Version)" UpgradeCode="6B1C0B8E-5E0D-4B7A-9C55-2D2D4C0A7E11" Scope="perMachine" Compressed="yes">
     <MajorUpgrade DowngradeErrorMessage="A newer version of Updateeer is already installed." />
     <MediaTemplate EmbedCab="yes" />
@@ -14,6 +14,9 @@
         </Component>
       </Directory>
     </StandardDirectory>
+
+    <WixVariable Id="WixUILicenseRtf" Value="packaging\windows\license.rtf" />
+    <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
 
     <Feature Id="Main" Title="Updateeer" Level="1">
       <ComponentRef Id="MainExe" />

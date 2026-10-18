@@ -27,7 +27,8 @@ jobs:
           $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.*)"').Matches[0].Groups[1].Value
           dotnet tool install --global wix --version 5.0.2
           New-Item -ItemType Directory -Force dist | Out-Null
-          wix build packaging/windows/main.wxs -arch x64 -d Version=$version -o "dist/Updateeer-$version-windows-x64.msi"
+          wix extension add -g WixToolset.UI.wixext/5.0.2
+          wix build packaging/windows/main.wxs -ext WixToolset.UI.wixext -arch x64 -d Version=$version -o "dist/Updateeer-$version-windows-x64.msi"
           Get-FileHash dist/*.msi -Algorithm SHA256 | Format-List
 
       - uses: actions/upload-artifact@v4
