@@ -1,6 +1,7 @@
 //! Linux package managers: apt, pacman, dnf, Flatpak and Snap. Parsing is plain text handling, so
 //! it is unit-tested on every OS; running them only makes sense on Linux.
 use std::collections::{HashMap, HashSet};
+use std::fs;
 use std::path::PathBuf;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -22,8 +23,122 @@ fn find(name: &str) -> Option<PathBuf> {
 pub fn path(kind: &str) -> Option<PathBuf> {
     find(match kind {
         "apt" => "apt-get",
+        // AUR packages are the foreign ones of pacman; the helper is only needed to update them.
+        "aur" => "pacman",
         k => k,
     })
+}
+
+/// The AUR helper installed, if any.
+fn aur_helper() -> Option<&'static str> {
+    ["paru", "yay"].into_iter().find(|h| find(h).is_some())
+}
+
+/// Ids of system packages that ship a launcher (graphical apps), per manager prefix.
+static GUI: Mutex<Option<HashSet<String>>> = Mutex::new(None);
+
+fn set_gui<'a>(prefix: &str, names: impl Iterator<Item = &'a String>) {
+    let mut g = GUI.lock().unwrap_or_else(|e| e.into_inner());
+    let set = g.get_or_insert_with(HashSet::new);
+    set.retain(|id| !id.starts_with(&format!("{prefix}:")));
+    set.extend(names.map(|n| format!("{prefix}:{n}")));
+}
+
+/// Whether a system package id is known to ship a launcher.
+pub fn is_gui(id: &str) -> bool {
+    GUI.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|s| s.contains(id))
+}
+
+/// Whether a package file list has a launcher (`usr/share/applications/*.desktop`).
+pub fn has_desktop(files: &str) -> bool {
+    files.lines().any(|l| l.trim().trim_start_matches('/').strip_prefix("usr/share/applications/").is_some_and(|f| f.ends_with(".desktop") && !f.contains('/')))
+}
+
+/// `name-1.2-3` (a pacman database folder) into `(name, "1.2-3")`.
+pub fn pacman_dir(dir: &str) -> Option<(String, String)> {
+    let mut p = dir.rsplitn(3, '-');
+    let (rel, ver, name) = (p.next()?, p.next()?, p.next()?);
+    Some((name.to_string(), format!("{ver}-{rel}")))
+}
+
+/// Native and AUR packages that ship a launcher: `(name, version)`, from pacman's database.
+fn pacman_gui() -> Vec<(String, String)> {
+    fs::read_dir("/var/lib/pacman/local")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let (name, version) = pacman_dir(&e.file_name().to_string_lossy())?;
+            has_desktop(&fs::read_to_string(e.path().join("files")).ok()?).then_some((name, version))
+        })
+        .collect()
+}
+
+/// Debian packages that ship a launcher, from dpkg's file lists.
+fn apt_gui() -> HashSet<String> {
+    fs::read_dir("/var/lib/dpkg/info")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let file = e.file_name().to_string_lossy().to_string();
+            let name = file.strip_suffix(".list")?.split(':').next()?.to_string();
+            has_desktop(&fs::read_to_string(e.path()).ok()?).then_some(name)
+        })
+        .collect()
+}
+
+/// rpm packages that own a launcher in `/usr/share/applications`: `(name, version)`.
+fn rpm_gui() -> Vec<(String, String)> {
+    let (Some(bin), Ok(dir)) = (find("rpm"), fs::read_dir("/usr/share/applications")) else { return Vec::new() };
+    let files: Vec<String> = dir.flatten().map(|e| e.path().to_string_lossy().to_string()).filter(|p| p.ends_with(".desktop")).collect();
+    // Files nobody owns make rpm exit with an error but still print the rest, so read stdout anyway.
+    let out = Command::new(bin).env("LC_ALL", "C").args(["-qf", "--qf", "%{NAME}\t%{VERSION}-%{RELEASE}\n"]).args(&files).stdin(std::process::Stdio::null()).output();
+    let text = out.map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
+    let mut seen = HashSet::new();
+    text.lines().filter_map(|l| l.split_once('\t')).filter(|(n, _)| safe_name(n) && seen.insert(n.to_string())).map(|(n, v)| (n.to_string(), v.to_string())).collect()
+}
+
+/// The `Name` of a `.desktop` file that is a visible application (not a Chrome web-app shortcut).
+pub fn parse_desktop(text: &str) -> Option<String> {
+    let (mut in_entry, mut name, mut app, mut hidden, mut web) = (false, None, false, false, false);
+    for line in text.lines().map(str::trim) {
+        if line.starts_with('[') {
+            in_entry = line == "[Desktop Entry]";
+        } else if in_entry && let Some((k, v)) = line.split_once('=') {
+            match k {
+                "Type" => app = v == "Application",
+                "Name" => name = Some(v.to_string()),
+                "NoDisplay" | "Hidden" => hidden |= v == "true",
+                "Exec" => web |= v.contains("--app-id=") || v.contains("--app="),
+                _ => {}
+            }
+        }
+    }
+    name.filter(|_| app && !hidden && !web)
+}
+
+/// Launchers nobody packaged (AppImages, tarballs, installer scripts): apps no package manager
+/// reported. `known` are the apps already found, matched by name.
+pub fn direct_apps(known: &[App]) -> Vec<App> {
+    let home = std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share/applications"));
+    let dirs = [home, Some(PathBuf::from("/usr/local/share/applications"))];
+    let mut seen: HashSet<String> = known.iter().flat_map(|a| [a.name.to_lowercase(), a.id.split_once(':').map_or(String::new(), |(_, n)| n.to_lowercase())]).collect();
+    let mut apps = Vec::new();
+    for dir in dirs.into_iter().flatten() {
+        for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            let Some(stem) = path.file_name().and_then(|f| f.to_str()).and_then(|f| f.strip_suffix(".desktop")) else { continue };
+            let Ok(text) = fs::read_to_string(&path) else { continue };
+            let Some(name) = parse_desktop(&text) else { continue };
+            if seen.contains(&name.to_lowercase()) || seen.contains(&stem.to_lowercase()) {
+                continue;
+            }
+            seen.insert(name.to_lowercase());
+            apps.push(app("direct", &name, &name, "Descarga directa", "", "", Source::Direct));
+        }
+    }
+    apps
 }
 
 /// Runs a tool with the C locale so the output format never depends on the user's language.
@@ -139,14 +254,26 @@ fn run_in(sh: &mut RootShell, args: &[&str]) -> Ran {
 
 pub fn outdated(kind: &str) -> Result<Vec<App>, String> {
     Ok(match kind {
-        "apt" => parse_apt_upgradable(&exec("apt", &["list", "--upgradable"], SCAN_TIMEOUT)?),
+        "apt" => {
+            set_gui("apt", apt_gui().iter());
+            parse_apt_upgradable(&exec("apt", &["list", "--upgradable"], SCAN_TIMEOUT)?)
+        }
         // `-Qu` only knows the last synced database; `checkupdates` (pacman-contrib) syncs a private
         // copy first. Both exit non-zero with no output when nothing is outdated.
         "pacman" => {
+            refresh_pacman_gui();
             let out = if path("checkupdates").is_some() { exec("checkupdates", &[], UPGRADE_TIMEOUT) } else { exec("pacman", &["-Qu"], SCAN_TIMEOUT) };
             parse_pacman_upgrades(&none_if_silent(out)?)
         }
+        "aur" => {
+            refresh_pacman_gui();
+            match aur_helper() {
+                Some(h) => parse_upgrades("aur", Source::Aur, &none_if_silent(exec(h, &["-Qua"], UPGRADE_TIMEOUT))?),
+                None => Vec::new(),
+            }
+        }
         "dnf" => {
+            set_gui("dnf", rpm_gui().iter().map(|(n, _)| n).collect::<Vec<_>>().into_iter());
             let mut apps = parse_dnf_upgrades(&exec("dnf", &["list", "--upgrades", "-q"], SCAN_TIMEOUT)?);
             fill_rpm_versions(&mut apps);
             apps
@@ -170,14 +297,66 @@ pub fn installed(kind: &str) -> Result<Vec<App>, String> {
         "apt" => {
             let manual = exec("apt-mark", &["showmanual"], SCAN_TIMEOUT)?;
             let all = exec("dpkg-query", &["-W", "-f=${Package}\t${Version}\n"], SCAN_TIMEOUT)?;
-            parse_apt_installed(&manual, &all)
+            let gui = apt_gui();
+            set_gui("apt", gui.iter());
+            parse_apt_installed(&manual, &all, &gui)
         }
-        "pacman" => parse_pairs("pacman", &exec("pacman", &["-Qe"], SCAN_TIMEOUT)?, Source::Pacman, ' '),
-        "dnf" => parse_pairs("dnf", &exec("dnf", &["repoquery", "--userinstalled", "-q", "--queryformat", "%{name}\t%{version}-%{release}\n"], SCAN_TIMEOUT)?, Source::Dnf, '\t'),
+        "pacman" | "aur" => {
+            let (native, aur) = pacman_installed()?;
+            if kind == "pacman" { native } else { aur }
+        }
+        "dnf" => {
+            let mut apps = parse_pairs("dnf", &exec("dnf", &["repoquery", "--userinstalled", "-q", "--queryformat", "%{name}\t%{version}-%{release}\n"], SCAN_TIMEOUT)?, Source::Dnf, '\t');
+            let gui = rpm_gui();
+            set_gui("dnf", gui.iter().map(|(n, _)| n).collect::<Vec<_>>().into_iter());
+            let have: HashSet<String> = apps.iter().map(|a| a.name.clone()).collect();
+            apps.extend(gui.iter().filter(|(n, _)| !have.contains(n)).map(|(n, v)| app("dnf", n, n, "dnf", v, "", Source::Dnf)));
+            apps
+        }
         "flatpak" => parse_flatpak_list(&exec("flatpak", &["list", "--app", "--columns=application,name,version"], SCAN_TIMEOUT)?),
         "snap" => parse_snap_list(&exec("snap", &["list"], SCAN_TIMEOUT)?),
         _ => return Err(format!("gestor no soportado: {kind}")),
     })
+}
+
+/// Remembers which pacman/AUR packages ship a launcher.
+fn refresh_pacman_gui() {
+    let foreign = foreign_names();
+    let gui = pacman_gui();
+    set_gui("pacman", gui.iter().map(|(n, _)| n).filter(|n| !foreign.contains(*n)).collect::<Vec<_>>().into_iter());
+    set_gui("aur", gui.iter().map(|(n, _)| n).filter(|n| foreign.contains(*n)).collect::<Vec<_>>().into_iter());
+}
+
+fn foreign_names() -> HashSet<String> {
+    let out = none_if_silent(exec("pacman", &["-Qm"], SCAN_TIMEOUT)).unwrap_or_default();
+    out.lines().filter_map(|l| l.split_whitespace().next()).map(str::to_string).collect()
+}
+
+/// pacman's explicit packages plus every package with a launcher, split into repository
+/// packages and AUR (foreign) ones.
+fn pacman_installed() -> Result<(Vec<App>, Vec<App>), String> {
+    let explicit = none_if_silent(exec("pacman", &["-Qe"], SCAN_TIMEOUT))?;
+    let foreign = foreign_names();
+    let gui = pacman_gui();
+    refresh_pacman_gui();
+    Ok(split_pacman(&explicit, &foreign, &gui))
+}
+
+fn split_pacman(explicit: &str, foreign: &HashSet<String>, gui: &[(String, String)]) -> (Vec<App>, Vec<App>) {
+    let mut seen = HashSet::new();
+    let (mut native, mut aur) = (Vec::new(), Vec::new());
+    let listed = explicit.lines().filter_map(|l| l.trim().split_once(' ')).map(|(n, v)| (n.to_string(), v.trim().to_string()));
+    for (name, version) in listed.chain(gui.iter().cloned()) {
+        if !safe_name(&name) || !seen.insert(name.clone()) {
+            continue;
+        }
+        if foreign.contains(&name) {
+            aur.push(app("aur", &name, &name, "AUR", &version, "", Source::Aur));
+        } else {
+            native.push(app("pacman", &name, &name, "pacman", &version, "", Source::Pacman));
+        }
+    }
+    (native, aur)
 }
 
 /// Blocks until the manager finishes; call it from a worker thread.
@@ -191,6 +370,16 @@ pub fn upgrade(kind: &str, name: &str) -> Result<(), String> {
         // everything; later queue entries then find nothing left to do.
         "pacman" => root(&["pacman", "-Syu", "--noconfirm"]),
         "dnf" => root(&["dnf", "upgrade", "-y", name]),
+        // AUR packages build as the user; the helper asks polkit whenever it needs root. It shares
+        // the root lock so it never meets a `pacman -Syu` on the database lock.
+        "aur" => {
+            let helper = aur_helper().ok_or("Falta paru o yay para actualizar paquetes del AUR")?;
+            let mut args = vec!["-S", "--noconfirm", "--needed", "--sudo", "/usr/bin/pkexec"];
+            args.extend(if helper == "paru" { vec!["--skipreview"] } else { vec!["--answerdiff", "None", "--answerclean", "None", "--nodiffmenu", "--noeditmenu"] });
+            args.push(name);
+            let _guard = ROOT.lock().unwrap_or_else(|e| e.into_inner());
+            exec(helper, &args, UPGRADE_TIMEOUT)
+        }
         "flatpak" => exec("flatpak", &["update", "-y", "--noninteractive", name], UPGRADE_TIMEOUT),
         // snapd asks polkit for the permission by itself.
         "snap" => exec("snap", &["refresh", name], UPGRADE_TIMEOUT),
@@ -275,23 +464,28 @@ pub fn parse_apt_upgradable(out: &str) -> Vec<App> {
 }
 
 /// Manually installed packages (`apt-mark showmanual`) with their versions from `dpkg-query`.
-pub fn parse_apt_installed(manual: &str, all: &str) -> Vec<App> {
+pub fn parse_apt_installed(manual: &str, all: &str, gui: &HashSet<String>) -> Vec<App> {
     let manual: HashSet<&str> = manual.lines().map(str::trim).collect();
     all.lines()
         .filter_map(|l| {
             let (name, version) = l.split_once('\t')?;
-            (manual.contains(name) && safe_name(name)).then(|| app("apt", name, name, "apt", version, "", Source::Apt))
+            ((manual.contains(name) || gui.contains(name)) && safe_name(name)).then(|| app("apt", name, name, "apt", version, "", Source::Apt))
         })
         .collect()
 }
 
 /// `pacman -Qu`: `name old -> new`.
 pub fn parse_pacman_upgrades(out: &str) -> Vec<App> {
+    parse_upgrades("pacman", Source::Pacman, out)
+}
+
+/// The same `name old -> new` lines from pacman, `checkupdates` or an AUR helper.
+pub fn parse_upgrades(prefix: &str, source: Source, out: &str) -> Vec<App> {
     out.lines()
         .filter_map(|l| {
             let t: Vec<&str> = l.split_whitespace().collect();
             let [name, from, "->", to, ..] = t[..] else { return None };
-            safe_name(name).then(|| app("pacman", name, name, "pacman", from, to, Source::Pacman))
+            safe_name(name).then(|| app(prefix, name, name, prefix, from, to, source))
         })
         .collect()
 }
@@ -424,8 +618,29 @@ mod tests {
 
     #[test]
     fn apt_manual_only() {
-        let apps = parse_apt_installed("git\nvim\n", "git\t1:2.43\nlibc6\t2.39\nvim\t2:9.1\n");
+        let none = HashSet::new();
+        let apps = parse_apt_installed("git\nvim\n", "git\t1:2.43\nlibc6\t2.39\nvim\t2:9.1\n", &none);
         assert_eq!(rows(&apps), [("apt:git", "1:2.43", ""), ("apt:vim", "2:9.1", "")]);
+        // A package with a launcher counts even when it was installed as a dependency.
+        let gui: HashSet<String> = ["libc6".to_string()].into();
+        assert_eq!(parse_apt_installed("git\n", "git\t1\nlibc6\t2\n", &gui).len(), 2);
+    }
+
+    #[test]
+    fn launchers_and_aur() {
+        assert!(has_desktop("usr/bin/chrome\nusr/share/applications/google-chrome.desktop\n"));
+        assert!(!has_desktop("usr/share/applications/\nusr/share/applications/sub/x.desktop\nusr/bin/x\n"));
+        assert_eq!(pacman_dir("google-chrome-126.0.1-1"), Some(("google-chrome".into(), "126.0.1-1".into())));
+        let entry = "[Desktop Entry]\nType=Application\nName=Chrome\nName[es]=Cromo\nExec=chrome %U\n";
+        assert_eq!(parse_desktop(entry), Some("Chrome".into()));
+        assert_eq!(parse_desktop("[Desktop Entry]\nType=Application\nName=X\nNoDisplay=true\n"), None);
+        assert_eq!(parse_desktop("[Desktop Entry]\nType=Application\nName=Gmail\nExec=chrome --app-id=abc\n"), None);
+        let foreign: HashSet<String> = ["google-chrome".to_string(), "paru".to_string()].into();
+        let gui = vec![("google-chrome".to_string(), "126-1".to_string()), ("firefox".to_string(), "127-1".to_string())];
+        let (native, aur) = split_pacman("git 2.45-1\nparu 2.0-1\n", &foreign, &gui);
+        assert_eq!(rows(&native), [("pacman:git", "2.45-1", ""), ("pacman:firefox", "127-1", "")]);
+        assert_eq!(rows(&aur), [("aur:paru", "2.0-1", ""), ("aur:google-chrome", "126-1", "")]);
+        assert_eq!(parse_upgrades("aur", Source::Aur, "paru 1.0-1 -> 2.0-1\n")[0].id, "aur:paru");
     }
 
     #[test]
@@ -449,6 +664,17 @@ mod tests {
         assert_eq!(run_in(&mut sh, &["sh", "-c", "echo boom >&2; exit 3"]).0, Err("boom".into()));
         assert_eq!(run_in(&mut sh, &["echo", "still", "alive"]).0, Ok("still alive".into()));
         let _ = sh.child.kill();
+    }
+
+    /// Needs a Debian-like system with a launcher package: `cargo test live_apt_gui -- --ignored`.
+    #[test]
+    #[ignore]
+    fn live_apt_gui() {
+        let gui = apt_gui();
+        assert!(gui.contains("xterm"), "{gui:?}");
+        let apps = installed("apt").unwrap();
+        assert!(apps.iter().any(|a| a.name == "xterm" && !a.from.is_empty()));
+        assert!(is_gui("apt:xterm"));
     }
 
     #[test]
