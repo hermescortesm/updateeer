@@ -12,14 +12,16 @@ eframe = { version = "0.37.0", default-features = false, features = ["glow", "x1
 png = "0.18.1"
 serde_json = "1.0.154"
 
-# Menu bar icon: macOS for now (Linux needs GTK, Windows comes with its release).
+# Menu bar / notification area icon: macOS and Windows (Linux would need GTK).
+[target.'cfg(any(target_os = "macos", windows))'.dependencies]
+tray-icon = { version = "0.26.1", default-features = false }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = { version = "0.6", default-features = false }
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSWindow", "NSResponder"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSSet", "NSString", "NSError", "NSObject"] }
 objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "block2", "UNUserNotificationCenter", "UNNotification", "UNNotificationRequest", "UNNotificationContent", "UNNotificationAction", "UNNotificationCategory", "UNNotificationResponse", "UNNotificationSound", "UNNotificationTrigger"] }
-tray-icon = { version = "0.26.1", default-features = false }
 
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"

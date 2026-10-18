@@ -20,8 +20,8 @@
 - **Detail page for each app.** Versions, source, vendor, size and dates in one place.
 - **Search, filter and sort.** By name, source (App Store, Homebrew, winget, apt, Flatpak…), type (apps or command-line tools), install date and more.
 - **Real icons.** Uses each app's own icon, a built-in library of 125 brand logos, or a colored letter tile.
-- **Automatic updates (optional).** Apps that are closed update on their own. For apps that are open, Updateeer asks once — *update now* or *later* — grouped in a single question.
-- **Runs in the background.** Menu bar / tray icon with the number of pending updates, and optional *open at login*.
+- **Automatic updates (optional).** Apps that are closed update on their own. For apps that are open — or that need administrator rights (apt, pacman, dnf, Chocolatey) — Updateeer asks once, *update now* or *later*, grouped in a single question.
+- **Runs in the background.** Menu bar (macOS) or notification-area (Windows) icon with the number of pending updates, and optional *open at login* on every system. On Linux the window minimizes instead (no tray icon yet).
 - **Light and dark themes**, following your system by default.
 - **Small and fast.** Native Rust + [egui](https://github.com/emilk/egui), a single binary of a few MB, and no CPU use while idle.
 

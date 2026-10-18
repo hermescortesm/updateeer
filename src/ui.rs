@@ -230,8 +230,8 @@ impl UpdatesApp {
         let mut ask = Vec::new();
         for app in self.apps.iter().filter(|a| self.queue.status(&a.id) == Status::Available) {
             match running::state(app, &procs) {
-                State::Idle => idle.push(app.id.clone()),
-                State::InUse | State::Unknown => {
+                State::Idle if !running::needs_admin(app) => idle.push(app.id.clone()),
+                State::Idle | State::InUse | State::Unknown => {
                     if self.snooze.get(&app.id).is_none_or(|t| now >= *t) {
                         ask.push(app.clone());
                     }
@@ -264,7 +264,7 @@ impl UpdatesApp {
                         self.snooze.insert(id, Instant::now() + Duration::from_secs(4 * 3600));
                     }
                 }
-                Reply::Open => native::set_hidden(false),
+                Reply::Open => native::set_hidden(&self.ctx, false),
             }
         }
     }
@@ -432,19 +432,19 @@ impl UpdatesApp {
     /// Menu bar icon: closing the window hides it instead of quitting; the menu drives the rest.
     fn menu_bar(&mut self) {
         let ctx = self.ctx.clone();
-        let Some(tray) = self.tray.as_mut() else { return };
         // eframe shows the window after its first frames; hide it once that is done.
         if let Some(n) = self.hide_in {
             self.hide_in = n.checked_sub(1);
             if n == 0 {
-                native::set_hidden(true);
+                native::set_hidden(&ctx, true);
             } else {
                 ctx.request_repaint();
             }
         }
+        let Some(tray) = self.tray.as_mut() else { return };
         if ctx.input(|i| i.viewport().close_requested()) && !self.quitting {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            native::set_hidden(true);
+            native::set_hidden(&ctx, true);
         }
         tray.update(self.queue.available_count(), self.scan_rx.is_some());
         let mut actions = Vec::new();
@@ -454,7 +454,7 @@ impl UpdatesApp {
         for action in actions {
             match action {
                 tray::Action::Open => {
-                    native::set_hidden(false);
+                    native::set_hidden(&ctx, false);
                 }
                 tray::Action::Scan => self.start_scan(),
                 tray::Action::Login => self.set_login(!self.login),
