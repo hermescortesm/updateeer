@@ -15,7 +15,7 @@ use crate::model::{App, Source};
 const BREW_PATHS: [&str; 2] = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"];
 
 /// Bumped by `cancel_running`; a process started under an older value is killed.
-static CANCEL_GEN: AtomicU64 = AtomicU64::new(0);
+pub(crate) static CANCEL_GEN: AtomicU64 = AtomicU64::new(0);
 
 /// Kills every package manager process that is running right now.
 pub fn cancel_running() {

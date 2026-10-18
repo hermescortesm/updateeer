@@ -2,15 +2,17 @@
 //! it is unit-tested on every OS; running them only makes sense on Linux.
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::process::Command;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::Ordering;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::Mutex;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use crate::model::{App, Source};
 use crate::scan::{self, SCAN_TIMEOUT, UPGRADE_TIMEOUT};
 use crate::winpkg::{app, safe_name};
-
-/// System package managers hold a global lock: two upgrades at once would fail one of them.
-static SYSTEM_LOCK: Mutex<()> = Mutex::new(());
 
 /// First `name` found in the usual binary directories.
 fn find(name: &str) -> Option<PathBuf> {
@@ -37,13 +39,102 @@ fn none_if_silent(r: Result<String, String>) -> Result<String, String> {
     r.or_else(|e| if e.trim().is_empty() { Ok(String::new()) } else { Err(e) })
 }
 
-/// `pkexec` asks for the password through the desktop's polkit dialog.
-fn root(args: &[&str]) -> Result<String, String> {
-    let _guard = SYSTEM_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+/// One root shell for the whole session: polkit asks for the password once, on the first
+/// administrator action, instead of once per update. Holding the lock also serializes the
+/// system package managers, which cannot run two at a time.
+struct RootShell {
+    child: Child,
+    stdin: ChildStdin,
+    lines: Receiver<String>,
+}
+
+static ROOT: Mutex<Option<RootShell>> = Mutex::new(None);
+const DONE: &str = "__UPDATEEER_DONE__";
+
+fn quote(arg: &str) -> String {
+    format!("'{}'", arg.replace('\'', "'\\''"))
+}
+
+fn start_root() -> Result<RootShell, String> {
     let bin = find("pkexec").ok_or("Falta pkexec (polkit) para pedir permisos de administrador")?;
-    let mut cmd = Command::new(bin);
-    cmd.env("LC_ALL", "C");
-    scan::run(cmd, args, UPGRADE_TIMEOUT)
+    spawn_shell(Command::new(bin).arg("/bin/sh"))
+}
+
+fn spawn_shell(cmd: &mut Command) -> Result<RootShell, String> {
+    let mut child = cmd
+        .env("LC_ALL", "C")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    let stdin = child.stdin.take().ok_or("sin entrada")?;
+    let (tx, lines) = mpsc::channel();
+    for stream in [child.stdout.take().map(|s| Box::new(s) as Box<dyn Read + Send>), child.stderr.take().map(|s| Box::new(s) as Box<dyn Read + Send>)].into_iter().flatten() {
+        let tx = tx.clone();
+        thread::spawn(move || {
+            for line in BufReader::new(stream).lines().map_while(Result::ok) {
+                if tx.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+    }
+    Ok(RootShell { child, stdin, lines })
+}
+
+/// Runs a command as root through the shared shell. Cancelling or timing out drops the shell
+/// (the next action asks for the password again).
+fn root(args: &[&str]) -> Result<String, String> {
+    let mut guard = ROOT.lock().unwrap_or_else(|e| e.into_inner());
+    if guard.as_mut().is_some_and(|sh| sh.child.try_wait().ok().flatten().is_some()) {
+        *guard = None;
+    }
+    if guard.is_none() {
+        *guard = Some(start_root()?);
+    }
+    let result = run_in(guard.as_mut().expect("just started"), args);
+    if result.1
+        && let Some(mut sh) = guard.take()
+    {
+        let _ = sh.child.kill();
+        let _ = sh.child.wait();
+    }
+    result.0
+}
+
+/// Result plus whether the shell must be thrown away.
+struct Ran(Result<String, String>, bool);
+
+fn run_in(sh: &mut RootShell, args: &[&str]) -> Ran {
+    let generation = scan::CANCEL_GEN.load(Ordering::SeqCst);
+    let cmd = args.iter().map(|a| quote(a)).collect::<Vec<_>>().join(" ");
+    if writeln!(sh.stdin, "{{ {cmd}; }} 2>&1 </dev/null; echo {DONE}$?").and_then(|_| sh.stdin.flush()).is_err() {
+        return Ran(Err("No se pudo contactar al shell de administrador".into()), true);
+    }
+    let deadline = Instant::now() + UPGRADE_TIMEOUT;
+    let mut out = Vec::new();
+    loop {
+        if scan::CANCEL_GEN.load(Ordering::SeqCst) != generation {
+            return Ran(Err("Cancelado".into()), true);
+        }
+        if Instant::now() >= deadline {
+            return Ran(Err("El comando tardó demasiado y se canceló".into()), true);
+        }
+        match sh.lines.recv_timeout(Duration::from_millis(100)) {
+            Ok(line) => match line.strip_prefix(DONE) {
+                Some("0") => return Ran(Ok(out.join("\n")), false),
+                Some(_) => return Ran(Err(scan::tail(&out.join("\n"))), false),
+                None => out.push(line),
+            },
+            Err(RecvTimeoutError::Timeout) => {}
+            // pkexec ended: password refused, dialog dismissed or polkit missing.
+            Err(RecvTimeoutError::Disconnected) => {
+                let why = scan::tail(&out.join("\n"));
+                return Ran(Err(if why.is_empty() { "No se obtuvieron permisos de administrador".into() } else { why }), true);
+            }
+        }
+    }
 }
 
 pub fn outdated(kind: &str) -> Result<Vec<App>, String> {
@@ -114,7 +205,13 @@ pub fn install(kind: &str, name: &str) -> Result<(), String> {
         return Err(format!("id no soportado: {kind}:{name}"));
     }
     match kind {
-        "flatpak" => exec("flatpak", &["install", "-y", "--noninteractive", "flathub", name], UPGRADE_TIMEOUT),
+        // Flathub may exist both per-user and system-wide, which flatpak refuses to choose in
+        // non-interactive mode; always use the user installation (no root needed).
+        "flatpak" => {
+            let url = "https://dl.flathub.org/repo/flathub.flatpakrepo";
+            exec("flatpak", &["remote-add", "--user", "--if-not-exists", "flathub", url], SCAN_TIMEOUT)?;
+            exec("flatpak", &["install", "--user", "-y", "--noninteractive", "flathub", name], UPGRADE_TIMEOUT)
+        }
         "apt" => root(&["env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y", name]),
         _ => Err(format!("id no soportado: {kind}:{name}")),
     }
@@ -331,6 +428,16 @@ mod tests {
     fn silent_failure_means_no_updates() {
         assert_eq!(none_if_silent(Err(String::new())), Ok(String::new()));
         assert_eq!(none_if_silent(Err("error: boom".into())), Err("error: boom".into()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn one_shell_runs_many_commands() {
+        let mut sh = spawn_shell(&mut Command::new("/bin/sh")).unwrap();
+        assert_eq!(run_in(&mut sh, &["echo", "it's", "one"]).0, Ok("it's one".into()));
+        assert_eq!(run_in(&mut sh, &["sh", "-c", "echo boom >&2; exit 3"]).0, Err("boom".into()));
+        assert_eq!(run_in(&mut sh, &["echo", "still", "alive"]).0, Ok("still alive".into()));
+        let _ = sh.child.kill();
     }
 
     #[test]
