@@ -46,9 +46,43 @@ Download the installer for your system from the [latest release](https://github.
 | macOS (Intel) | `Updateeer-<version>-macos-x86_64.dmg` |
 | Windows (x64) | `Updateeer-<version>-windows-x64.msi` |
 | Debian / Ubuntu / Mint | `Updateeer-<version>-linux-amd64.deb` |
+| Fedora / RHEL / openSUSE | `Updateeer-<version>-linux-x86_64.rpm` |
 | Arch / Manjaro | `Updateeer-<version>-linux-x86_64.pkg.tar.zst` |
 
-The installers are not code-signed yet, so macOS and Windows will warn you the first time (macOS: right-click → Open; Windows: *More info* → *Run anyway*).
+### macOS
+
+1. Open the `.dmg` and drag **Updateeer** onto the **Applications** folder.
+2. The first time, right-click the app → **Open** (the installer is not notarized yet).
+3. Optional: the welcome screen asks for *App Management* permission so updates can replace apps.
+
+### Windows
+
+1. Run the `.msi` and follow the wizard.
+2. If SmartScreen warns you (the installer is not code-signed), choose **More info** → **Run anyway**.
+
+### Debian / Ubuntu / Mint
+
+```sh
+sudo apt install ./Updateeer-<version>-linux-amd64.deb
+```
+
+### Arch / Manjaro
+
+```sh
+sudo pacman -U Updateeer-<version>-linux-x86_64.pkg.tar.zst
+```
+
+For accurate pacman results install `pacman-contrib` (`sudo pacman -S pacman-contrib`): Updateeer then uses `checkupdates`, which syncs the package database without root.
+
+### Fedora / RHEL
+
+```sh
+sudo dnf install ./Updateeer-<version>-linux-x86_64.rpm
+```
+
+Other distributions: [build from source](#build-from-source) and copy `target/release/updateeer` to `~/.local/bin`.
+
+Updateeer does not update itself yet: when a newer version exists it tells you, and you install the new file the same way. Verify downloads with the SHA-256 list in each release's notes.
 
 ## Build from source
 
@@ -57,7 +91,7 @@ cargo build --release     # needs Rust 1.89 or newer
 cargo test
 ```
 
-Packaging scripts: `tools/package-macos.sh <target>` (needs `pip install dmgbuild`; builds the drag-to-Applications installer), `tools/package-deb.sh`, `packaging/windows/main.wxs` (WiX 5) and `packaging/arch/PKGBUILD`.
+Packaging scripts: `tools/package-macos.sh <target>` (needs `pip install dmgbuild`; builds the drag-to-Applications installer), `tools/package-deb.sh`, `tools/package-rpm.sh`, `packaging/windows/main.wxs` (WiX 5) and `packaging/arch/PKGBUILD`.
 
 ## Privacy
 
