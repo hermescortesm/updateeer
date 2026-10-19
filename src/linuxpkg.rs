@@ -426,6 +426,38 @@ fn refresh_apt() {
     let _ = root(&["apt-get", "update", "-q"]);
 }
 
+/// Pending pacman upgrades. `checkupdates` syncs a private copy of the databases; it fails with
+/// "Cannot fetch updates" when a mirror hiccups or another tool (a panel module, say) is using the
+/// same copy, so it gets its own folder and a few tries. As a last resort the local database is
+/// read, but an empty answer from that is not trusted: it would claim "up to date" for nothing.
+fn pacman_updates() -> Result<String, String> {
+    let mut failure = None;
+    if let Some(bin) = path("checkupdates") {
+        let user = std::env::var("USER").unwrap_or_else(|_| "user".into());
+        let db = std::env::temp_dir().join(format!("updateeer-checkup-db-{user}"));
+        for attempt in 1..=3u64 {
+            let mut cmd = Command::new(&bin);
+            cmd.env("LC_ALL", "C").env("CHECKUPDATES_DB", &db);
+            match none_if_silent(scan::run(cmd, &[], UPGRADE_TIMEOUT)) {
+                Ok(out) => return Ok(out),
+                Err(e) => {
+                    failure = Some(e);
+                    if attempt < 3 {
+                        thread::sleep(Duration::from_secs(2 * attempt));
+                    }
+                }
+            }
+        }
+    }
+    let local = none_if_silent(exec("pacman", &["-Qu"], SCAN_TIMEOUT));
+    match (local, failure) {
+        (Ok(out), Some(e)) if out.trim().is_empty() => Err(e),
+        (Ok(out), _) => Ok(out),
+        (Err(e), Some(first)) => Err(if first.is_empty() { e } else { first }),
+        (Err(e), None) => Err(e),
+    }
+}
+
 pub fn outdated(kind: &str) -> Result<Vec<App>, String> {
     outdated_raw(kind).map(|apps| apps.into_iter().map(polish).collect())
 }
@@ -443,8 +475,7 @@ fn outdated_raw(kind: &str) -> Result<Vec<App>, String> {
             // A new look at the system: whatever was upgraded before no longer counts.
             *SYSTEM_UPGRADED.lock().unwrap_or_else(|e| e.into_inner()) = None;
             refresh_pacman_gui();
-            let out = if path("checkupdates").is_some() { exec("checkupdates", &[], UPGRADE_TIMEOUT) } else { exec("pacman", &["-Qu"], SCAN_TIMEOUT) };
-            parse_pacman_upgrades(&none_if_silent(out)?)
+            parse_pacman_upgrades(&pacman_updates()?)
         }
         "aur" => {
             refresh_pacman_gui();
