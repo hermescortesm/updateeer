@@ -1,3 +1,4 @@
+use crate::i18n::t;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -45,7 +46,7 @@ impl Source {
         match self {
             Source::AppStore => "App Store",
             Source::Homebrew => "Homebrew",
-            Source::Direct => "Directa",
+            Source::Direct => t("Directa"),
             Source::Winget => "winget",
             Source::Scoop => "Scoop",
             Source::Chocolatey => "Chocolatey",
@@ -90,7 +91,6 @@ pub fn format_size(mb: Option<u32>) -> String {
 
 /// `12 oct 2026`, in UTC (no timezone database: day precision is enough here).
 pub fn date(t: SystemTime) -> String {
-    const MONTHS: [&str; 12] = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
     let days = t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() / 86_400;
     // Howard Hinnant's civil-from-days.
     let z = days as i64 + 719_468;
@@ -102,18 +102,34 @@ pub fn date(t: SystemTime) -> String {
     let day = doy - (153 * mp + 2) / 5 + 1;
     let month = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = yoe + era * 400 + i64::from(month <= 2);
-    format!("{day} {} {year}", MONTHS[month as usize - 1])
+    match crate::i18n::get() {
+        crate::i18n::Lang::Ja | crate::i18n::Lang::Zh => format!("{year}年{month}月{day}日"),
+        _ => format!("{day} {} {year}", crate::i18n::months()[month as usize - 1]),
+    }
 }
 
 /// `hoy`, `hace 3 d`, `hace 2 sem`, `hace 5 m`, `hace 1 año`.
 pub fn ago(t: SystemTime, now: SystemTime) -> String {
     let days = now.duration_since(t).unwrap_or_default().as_secs() / 86_400;
     match days {
-        0 => "hoy".into(),
-        1..=6 => format!("hace {days} d"),
-        7..=29 => format!("hace {} sem", days / 7),
-        30..=364 => format!("hace {} m", days / 30),
-        _ => format!("hace {} a", days / 365),
+        0 => crate::i18n::t("hoy").into(),
+        1..=6 => crate::i18n::tf1("hace {0} d", &days.to_string()),
+        7..=29 => crate::i18n::tf1("hace {0} sem", &(days / 7).to_string()),
+        30..=364 => crate::i18n::tf1("hace {0} m", &(days / 30).to_string()),
+        _ => crate::i18n::tf1("hace {0} a", &(days / 365).to_string()),
+    }
+}
+
+/// The same without the "ago" wording, for narrow columns: `3 d`, `2 sem`.
+pub fn ago_short(t: SystemTime, now: SystemTime) -> String {
+    let days = now.duration_since(t).unwrap_or_default().as_secs() / 86_400;
+    let tf1 = crate::i18n::tf1;
+    match days {
+        0 => crate::i18n::t("hoy").into(),
+        1..=6 => tf1("{0} d", &days.to_string()),
+        7..=29 => tf1("{0} sem", &(days / 7).to_string()),
+        30..=364 => tf1("{0} m", &(days / 30).to_string()),
+        _ => tf1("{0} a", &(days / 365).to_string()),
     }
 }
 
@@ -131,7 +147,7 @@ mod tests {
         assert_eq!(date(at(0)), "1 ene 1970");
         assert_eq!(date(at(20_743)), "17 oct 2026");
         assert_eq!(date(at(19_782)), "29 feb 2024");
-        assert_eq!(ago(at(100), at(100)), "hoy");
+        assert_eq!(ago(at(100), at(100)), t("hoy"));
         assert_eq!(ago(at(100), at(115)), "hace 2 sem");
         assert_eq!(ago(at(0), at(400)), "hace 1 a");
     }

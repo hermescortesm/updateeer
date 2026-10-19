@@ -2,7 +2,7 @@
 //! it is unit-tested on every OS; running them only makes sense on Linux.
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -171,7 +171,11 @@ pub fn pacman_dir(dir: &str) -> Option<(String, String)> {
 
 /// Native and AUR packages that ship a launcher: `(name, version)`, from pacman's database.
 fn pacman_gui() -> Vec<(String, String)> {
-    fs::read_dir("/var/lib/pacman/local")
+    pacman_gui_in(Path::new("/var/lib/pacman/local"))
+}
+
+fn pacman_gui_in(db: &Path) -> Vec<(String, String)> {
+    fs::read_dir(db)
         .into_iter()
         .flatten()
         .flatten()
@@ -994,6 +998,36 @@ mod tests {
         let apps = installed("apt").unwrap();
         assert!(apps.iter().any(|a| a.name == "xterm" && !a.from.is_empty()));
         assert!(is_gui("apt:xterm"));
+    }
+
+    /// Needs an Arch system with a launcher package: `cargo test live_pacman_gui -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn live_pacman_gui() {
+        for kind in ["pacman", "aur"] {
+            let apps = installed(kind).unwrap();
+            println!("{kind}: {:?}", apps.iter().map(|a| (&a.id, &a.name, &a.vendor)).collect::<Vec<_>>());
+        }
+        println!("gui: {:?}", pacman_gui());
+        let all: Vec<_> = installed("pacman").unwrap().into_iter().chain(installed("aur").unwrap()).collect();
+        assert!(all.iter().any(|a| a.name == "Google Chrome"), "Chrome missing");
+    }
+
+    #[test]
+    fn chrome_from_the_aur_is_found() {
+        let db = std::env::temp_dir().join(format!("updateeer-pacman-db-{}", std::process::id()));
+        let pkg = db.join("google-chrome-155.0.8059.84-1");
+        fs::create_dir_all(&pkg).unwrap();
+        fs::write(pkg.join("files"), "%FILES%\nopt/\nopt/google/\nusr/\nusr/bin/\nusr/bin/google-chrome-stable\nusr/share/applications\nusr/share/applications/com.google.Chrome.desktop\nusr/share/applications/google-chrome.desktop\n").unwrap();
+        fs::write(db.join("ALPM_DB_VERSION"), "9").unwrap();
+        let gui = pacman_gui_in(&db);
+        assert_eq!(gui, [("google-chrome".to_string(), "155.0.8059.84-1".to_string())]);
+        let foreign: HashSet<String> = ["google-chrome".to_string()].into();
+        let (native, aur) = split_pacman("", &foreign, &gui);
+        assert_eq!((native.len(), aur.len()), (0, 1));
+        let chrome = polish(aur.into_iter().next().unwrap());
+        assert_eq!((chrome.id.as_str(), chrome.name.as_str(), chrome.vendor.as_str()), ("aur:google-chrome", "Google Chrome", "Navegador de internet"));
+        let _ = fs::remove_dir_all(&db);
     }
 
     #[test]

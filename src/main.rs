@@ -4,6 +4,7 @@ mod autostart;
 mod catalog;
 mod friendly;
 mod history;
+mod i18n;
 mod discover;
 mod icons;
 mod linuxpkg;
@@ -64,7 +65,7 @@ fn main() -> eframe::Result {
         "Updateeer",
         options,
         Box::new(move |cc| {
-            theme::install(&cc.egui_ctx);
+            theme::install(&cc.egui_ctx, settings::Settings::load().lang.unwrap_or_else(i18n::detect));
             Ok(Box::new(ui::UpdatesApp::new(cc.egui_ctx.clone(), background)))
         }),
     )

@@ -12,7 +12,7 @@ pub fn path() -> Option<&'static str> {
 }
 
 fn mas(args: &[&str], timeout: std::time::Duration) -> Result<String, String> {
-    let bin = path().ok_or("mas no está instalado (brew install mas)")?;
+    let bin = path().ok_or(crate::i18n::t("mas no está instalado (brew install mas)"))?;
     scan::run(Command::new(bin), args, timeout)
 }
 
@@ -47,10 +47,10 @@ fn needs_admin(error: &str) -> bool {
 
 /// Runs the upgrade as root behind the system's own password dialog.
 fn admin_upgrade(id: &str) -> Result<(), String> {
-    let bin = path().ok_or("mas no está instalado (brew install mas)")?;
+    let bin = path().ok_or(crate::i18n::t("mas no está instalado (brew install mas)"))?;
     let script = format!("do shell script {} with administrator privileges", crate::setup::applescript_string(&format!("{bin} upgrade {id}")));
     scan::run(Command::new("/usr/bin/osascript"), &["-e", &script], UPGRADE_TIMEOUT).map(|_| ()).map_err(|e| {
-        if e.contains("-128") { "Cancelaste la petición de contraseña".to_string() } else { e }
+        if e.contains("-128") { crate::i18n::t("Cancelaste la petición de contraseña").to_string() } else { e }
     })
 }
 
