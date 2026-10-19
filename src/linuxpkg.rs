@@ -236,6 +236,29 @@ pub fn direct_apps(known: &[App]) -> Vec<App> {
     apps
 }
 
+/// Whether a failure looks like a dropped or slow connection, worth trying again.
+fn is_network_error(e: &str) -> bool {
+    let e = e.to_lowercase();
+    ["timeout was reached", "timed out", "connection reset", "could not connect", "couldn't connect", "temporary failure", "network is unreachable", "error from the server", "http/2 stream", "transferred a partial file"].iter().any(|m| e.contains(m))
+}
+
+/// Flathub often drops a big download halfway ("Timeout was reached"); the files already fetched
+/// are kept, so another try carries on from there. Up to 4 attempts, unless cancelled.
+fn retry_network(mut run: impl FnMut() -> Result<String, String>) -> Result<String, String> {
+    let generation = scan::CANCEL_GEN.load(Ordering::SeqCst);
+    let mut attempt = 1;
+    loop {
+        match run() {
+            Err(e) if attempt < 4 && is_network_error(&e) && scan::CANCEL_GEN.load(Ordering::SeqCst) == generation => {
+                thread::sleep(Duration::from_secs(if cfg!(test) { 0 } else { 3 * attempt }));
+                attempt += 1;
+            }
+            Err(e) if attempt > 1 && is_network_error(&e) => return Err(format!("{e} (se intentó {attempt} veces; revisa tu conexión)")),
+            r => return r,
+        }
+    }
+}
+
 /// Runs a tool with the C locale so the output format never depends on the user's language.
 fn exec(tool: &str, args: &[&str], timeout: std::time::Duration) -> Result<String, String> {
     let bin = path(tool).ok_or("No instalado")?;
@@ -527,7 +550,7 @@ pub fn upgrade(kind: &str, name: &str) -> Result<(), String> {
             let _guard = ROOT.lock().unwrap_or_else(|e| e.into_inner());
             exec(helper, &args, UPGRADE_TIMEOUT)
         }
-        "flatpak" => exec("flatpak", &["update", "-y", "--noninteractive", name], UPGRADE_TIMEOUT),
+        "flatpak" => retry_network(|| exec("flatpak", &["update", "-y", "--noninteractive", name], UPGRADE_TIMEOUT)),
         // snapd asks polkit for the permission by itself.
         "snap" => exec("snap", &["refresh", name], UPGRADE_TIMEOUT),
         _ => Err(format!("id no soportado: {kind}:{name}")),
@@ -558,7 +581,7 @@ pub fn install(kind: &str, name: &str) -> Result<(), String> {
         "flatpak" => {
             let url = "https://dl.flathub.org/repo/flathub.flatpakrepo";
             exec("flatpak", &["remote-add", "--user", "--if-not-exists", "flathub", url], SCAN_TIMEOUT)?;
-            exec("flatpak", &["install", "--user", "-y", "--noninteractive", "flathub", name], UPGRADE_TIMEOUT)
+            retry_network(|| exec("flatpak", &["install", "--user", "-y", "--noninteractive", "flathub", name], UPGRADE_TIMEOUT))
         }
         "apt" => root(&["env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y", name]),
         _ => Err(format!("id no soportado: {kind}:{name}")),
@@ -873,6 +896,18 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[test]
+    fn network_failures_are_retried() {
+        let mut calls = 0;
+        let r = retry_network(|| {
+            calls += 1;
+            if calls < 3 { Err("error: Failed to install org.gimp.GIMP: While fetching [28] Timeout was reached".into()) } else { Ok("done".into()) }
+        });
+        assert_eq!((r, calls), (Ok("done".into()), 3));
+        let mut calls = 0;
+        assert!(retry_network(|| { calls += 1; Err("No space left on device".into()) }).is_err() && calls == 1);
+    }
+
     #[test]
     fn one_shell_runs_many_commands() {
         let mut sh = spawn_shell(&mut Command::new("/bin/sh")).unwrap();
