@@ -15,6 +15,8 @@ pub enum Icon {
     Arrow,
     Check,
     Compass,
+    /// A turning arc: something is running.
+    Busy,
 }
 
 /// Draws a 24x24 stroke icon scaled to `rect`.
@@ -65,6 +67,17 @@ pub fn icon(ui: &Ui, rect: Rect, kind: Icon, color: Color32, width: f32) {
                 .collect();
             line(&arc);
             line(&[(20.0, 4.0), (20.0, 9.0), (15.0, 9.0)]);
+        }
+        Icon::Busy => {
+            let start = ui.input(|i| i.time) as f32 * 5.0;
+            let arc: Vec<(f32, f32)> = (0..=18)
+                .map(|i| {
+                    let a = start + i as f32 / 18.0 * 4.4;
+                    (12.0 + 8.0 * a.cos(), 12.0 + 8.0 * a.sin())
+                })
+                .collect();
+            line(&arc);
+            ui.ctx().request_repaint();
         }
         Icon::Arrow => {
             line(&[(5.0, 12.0), (19.0, 12.0)]);
@@ -196,6 +209,20 @@ pub fn chip(ui: &mut Ui, text: &str) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(86.0, 26.0), Sense::hover());
     ui.painter().rect_filled(rect, CornerRadius::same(7), tint(13));
     ui.painter().text(rect.center(), Align2::CENTER_CENTER, text, FontId::new(12.0, semibold()), text_2());
+}
+
+/// A bar with a segment sliding back and forth: work is going on but its size is unknown.
+pub fn busy_bar(ui: &mut Ui, h: f32) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), h), Sense::hover());
+    let r = CornerRadius::same((h / 2.0) as u8);
+    ui.painter().rect_filled(rect, r, tint(20));
+    let t = ui.input(|i| i.time) as f32 * 0.9;
+    // Triangle wave 0..1..0, so the segment bounces instead of jumping back.
+    let pos = 1.0 - (t % 2.0 - 1.0).abs();
+    let seg = rect.width() * 0.3;
+    let x = rect.min.x + (rect.width() - seg) * pos;
+    ui.painter().rect_filled(Rect::from_min_size(Pos2::new(x, rect.min.y), Vec2::new(seg, h)), r, ACCENT);
+    ui.ctx().request_repaint();
 }
 
 pub fn progress_bar(ui: &mut Ui, frac: f32, h: f32) {
