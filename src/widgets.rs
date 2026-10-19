@@ -4,7 +4,7 @@ use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Pos2, Rect, Resp
 use crate::model::App;
 use crate::theme::*;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub enum Icon {
     Download,
     Grid,
@@ -120,7 +120,9 @@ pub fn button(ui: &mut Ui, ic: Option<Icon>, label: &str, kind: Kind, h: f32, en
     }
     let mut x = rect.min.x + pad;
     if let Some(ic) = ic {
-        icon(ui, Rect::from_min_size(Pos2::new(x, rect.center().y - 8.5), Vec2::splat(17.0)), ic, fg.gamma_multiply(fade), 2.3);
+        // The turning arc stays bright while the button is locked: it says work is going on.
+        let ic_fade = if ic == Icon::Busy { 1.0 } else { fade };
+        icon(ui, Rect::from_min_size(Pos2::new(x, rect.center().y - 8.5), Vec2::splat(17.0)), ic, fg.gamma_multiply(ic_fade), 2.3);
         x += icon_w;
     }
     ui.painter().galley(Pos2::new(x, rect.center().y - galley.size().y / 2.0), galley, fg.gamma_multiply(fade));
