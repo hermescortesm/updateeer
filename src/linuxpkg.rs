@@ -11,6 +11,7 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::friendly;
 use crate::model::{App, Source};
 use crate::scan::{self, SCAN_TIMEOUT, UPGRADE_TIMEOUT};
 use crate::winpkg::{app, safe_name};
@@ -50,9 +51,88 @@ pub fn is_gui(id: &str) -> bool {
     GUI.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|s| s.contains(id))
 }
 
-/// Whether a package file list has a launcher (`usr/share/applications/*.desktop`).
-pub fn has_desktop(files: &str) -> bool {
-    files.lines().any(|l| l.trim().trim_start_matches('/').strip_prefix("usr/share/applications/").is_some_and(|f| f.ends_with(".desktop") && !f.contains('/')))
+/// Launchers (`usr/share/applications/*.desktop`) in a package file list, by file name.
+pub fn desktops(files: &str) -> Vec<String> {
+    files.lines().filter_map(|l| l.trim().trim_start_matches('/').strip_prefix("usr/share/applications/").filter(|f| f.ends_with(".desktop") && !f.contains('/')).map(str::to_string)).collect()
+}
+
+/// Launcher details of installed packages, `group:package` -> (name, categories), filled while
+/// the package databases are read.
+static META: Mutex<Option<HashMap<String, (String, String)>>> = Mutex::new(None);
+
+/// Package managers sharing one package database.
+fn group(prefix: &str) -> &str {
+    match prefix {
+        "aur" => "pacman",
+        "dnf" | "zypper" => "rpm",
+        p => p,
+    }
+}
+
+/// `Name` (Spanish when there is one) and `Categories` of a launcher file.
+pub fn parse_desktop_meta(text: &str) -> Option<(String, String)> {
+    let (mut in_entry, mut name, mut local, mut cats) = (false, None, None, String::new());
+    for line in text.lines().map(str::trim) {
+        if line.starts_with('[') {
+            in_entry = line == "[Desktop Entry]";
+        } else if in_entry && let Some((k, v)) = line.split_once('=') {
+            match k {
+                "Name" => name = Some(v.to_string()),
+                k if k.starts_with("Name[es") => local = local.or(Some(v.to_string())),
+                "Categories" => cats = v.to_string(),
+                _ => {}
+            }
+        }
+    }
+    local.or(name).map(|n| (n, cats))
+}
+
+/// Remembers the launcher of `package` (read from the first of `files` that exists).
+fn note_desktop(prefix: &str, package: &str, files: &[String]) {
+    let found = files.iter().find_map(|f| fs::read_to_string(format!("/usr/share/applications/{f}")).ok().as_deref().and_then(parse_desktop_meta));
+    if let Some(meta) = found {
+        META.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(format!("{}:{package}", group(prefix)), meta);
+    }
+}
+
+/// Flatpak and Snap export their launchers to fixed folders.
+fn exported_desktop(prefix: &str, id: &str) -> Option<(String, String)> {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let paths = match prefix {
+        "flatpak" => vec![format!("/var/lib/flatpak/exports/share/applications/{id}.desktop"), format!("{home}/.local/share/flatpak/exports/share/applications/{id}.desktop")],
+        "snap" => vec![format!("/var/lib/snapd/desktop/applications/{id}_{id}.desktop")],
+        _ => return None,
+    };
+    paths.iter().find_map(|p| fs::read_to_string(p).ok().as_deref().and_then(parse_desktop_meta))
+}
+
+/// Readable name and short Spanish description instead of the package name: from the launcher
+/// when the package has one, from the curated list, or cleaned from the package name.
+fn polish(mut a: App) -> App {
+    let Some((prefix, id)) = a.id.split_once(':') else { return a };
+    if prefix == "direct" {
+        return a;
+    }
+    let meta = META.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|m| m.get(&format!("{}:{id}", group(prefix))).cloned()).or_else(|| exported_desktop(prefix, id));
+    let known = friendly::known(id);
+    // Flatpak and Snap already list a real name; the others only know the package name.
+    let own = matches!(prefix, "flatpak" | "snap");
+    let name = match (&known, &meta) {
+        (Some((n, _)), _) => n.to_string(),
+        (None, _) if own => a.name.clone(),
+        (None, Some((n, _))) => friendly::tidy(n),
+        (None, None) => friendly::display(id),
+    };
+    let generic = ["", "pacman", "AUR", "apt", "dnf", "zypper", "apk", "xbps", "snap", "Flatpak"].contains(&a.vendor.as_str()) || own;
+    let desc = known.map(|(_, d)| d).or_else(|| meta.as_ref().and_then(|(_, c)| friendly::describe(c)));
+    if let Some(d) = desc {
+        a.vendor = d.to_string();
+    } else if generic && own {
+        a.vendor = if prefix == "snap" { "Snap".into() } else { "Flatpak".into() };
+    }
+    a.hue = scan::hue(&name);
+    a.name = name;
+    a
 }
 
 /// `name-1.2-3` (a pacman database folder) into `(name, "1.2-3")`.
@@ -70,7 +150,9 @@ fn pacman_gui() -> Vec<(String, String)> {
         .flatten()
         .filter_map(|e| {
             let (name, version) = pacman_dir(&e.file_name().to_string_lossy())?;
-            has_desktop(&fs::read_to_string(e.path().join("files")).ok()?).then_some((name, version))
+            let launchers = desktops(&fs::read_to_string(e.path().join("files")).ok()?);
+            note_desktop("pacman", &name, &launchers);
+            (!launchers.is_empty()).then_some((name, version))
         })
         .collect()
 }
@@ -84,7 +166,9 @@ fn apt_gui() -> HashSet<String> {
         .filter_map(|e| {
             let file = e.file_name().to_string_lossy().to_string();
             let name = file.strip_suffix(".list")?.split(':').next()?.to_string();
-            has_desktop(&fs::read_to_string(e.path()).ok()?).then_some(name)
+            let launchers = desktops(&fs::read_to_string(e.path()).ok()?);
+            note_desktop("apt", &name, &launchers);
+            (!launchers.is_empty()).then_some(name)
         })
         .collect()
 }
@@ -94,10 +178,20 @@ fn rpm_gui() -> Vec<(String, String)> {
     let (Some(bin), Ok(dir)) = (find("rpm"), fs::read_dir("/usr/share/applications")) else { return Vec::new() };
     let files: Vec<String> = dir.flatten().map(|e| e.path().to_string_lossy().to_string()).filter(|p| p.ends_with(".desktop")).collect();
     // Files nobody owns make rpm exit with an error but still print the rest, so read stdout anyway.
-    let out = Command::new(bin).env("LC_ALL", "C").args(["-qf", "--qf", "%{NAME}\t%{VERSION}-%{RELEASE}\n"]).args(&files).stdin(std::process::Stdio::null()).output();
+    let out = Command::new(bin).env("LC_ALL", "C").args(["-qf", "--qf", "%{NAME}\t%{VERSION}-%{RELEASE}\t[%{FILENAMES} ]\n"]).args(&files).stdin(std::process::Stdio::null()).output();
     let text = out.map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
     let mut seen = HashSet::new();
-    text.lines().filter_map(|l| l.split_once('\t')).filter(|(n, _)| safe_name(n) && seen.insert(n.to_string())).map(|(n, v)| (n.to_string(), v.to_string())).collect()
+    text.lines()
+        .filter_map(|l| {
+            let mut f = l.splitn(3, '\t');
+            let (n, v, owned) = (f.next()?, f.next()?, f.next().unwrap_or(""));
+            (safe_name(n) && seen.insert(n.to_string())).then(|| {
+                let launchers: Vec<String> = owned.split_whitespace().filter_map(|p| p.strip_prefix("/usr/share/applications/")).filter(|f| f.ends_with(".desktop") && !f.contains('/')).map(str::to_string).collect();
+                note_desktop("rpm", n, &launchers);
+                (n.to_string(), v.to_string())
+            })
+        })
+        .collect()
 }
 
 /// The `Name` of a `.desktop` file that is a visible application (not a Chrome web-app shortcut).
@@ -276,6 +370,10 @@ fn refresh_apt() {
 }
 
 pub fn outdated(kind: &str) -> Result<Vec<App>, String> {
+    outdated_raw(kind).map(|apps| apps.into_iter().map(polish).collect())
+}
+
+fn outdated_raw(kind: &str) -> Result<Vec<App>, String> {
     Ok(match kind {
         "apt" => {
             refresh_apt();
@@ -327,6 +425,10 @@ pub fn outdated(kind: &str) -> Result<Vec<App>, String> {
 }
 
 pub fn installed(kind: &str) -> Result<Vec<App>, String> {
+    installed_raw(kind).map(|apps| apps.into_iter().map(polish).collect())
+}
+
+fn installed_raw(kind: &str) -> Result<Vec<App>, String> {
     Ok(match kind {
         "apt" => {
             let manual = exec("apt-mark", &["showmanual"], SCAN_TIMEOUT)?;
@@ -490,7 +592,7 @@ pub fn search(q: &str) -> Vec<App> {
     if let Ok(text) = exec("apt-cache", &["search", "--names-only", q], SCAN_TIMEOUT) {
         out.extend(parse_apt_search(&text).into_iter().take(15));
     }
-    out
+    out.into_iter().map(polish).collect()
 }
 
 fn flatpak_vendor(id: &str) -> &str {
@@ -628,7 +730,7 @@ fn fill_rpm_versions(apps: &mut [App]) {
         return;
     }
     let names: Vec<String> = apps.iter().filter_map(|a| a.id.strip_prefix("dnf:")).map(String::from).collect();
-    let mut args = vec!["-q", "--qf", "%{NAME}\t%{VERSION}-%{RELEASE}\n"];
+    let mut args = vec!["-q", "--qf", "%{NAME}\t%{VERSION}-%{RELEASE}\t[%{FILENAMES} ]\n"];
     args.extend(names.iter().map(String::as_str));
     // rpm exits non-zero when one of the names is not installed; the others are still printed.
     let Ok(bin) = path("rpm").ok_or("") else { return };
@@ -737,8 +839,13 @@ mod tests {
 
     #[test]
     fn launchers_and_aur() {
-        assert!(has_desktop("usr/bin/chrome\nusr/share/applications/google-chrome.desktop\n"));
-        assert!(!has_desktop("usr/share/applications/\nusr/share/applications/sub/x.desktop\nusr/bin/x\n"));
+        assert_eq!(desktops("usr/bin/chrome\nusr/share/applications/google-chrome.desktop\n"), ["google-chrome.desktop"]);
+        assert!(desktops("usr/share/applications/\nusr/share/applications/sub/x.desktop\nusr/bin/x\n").is_empty());
+        assert_eq!(parse_desktop_meta("[Desktop Entry]\nName=Brave Web Browser\nName[es]=Navegador Brave\nCategories=Network;WebBrowser;\n"), Some(("Navegador Brave".into(), "Network;WebBrowser;".into())));
+        let a = polish(app("aur", "brave-bin", "brave-bin", "AUR", "1", "", Source::Aur));
+        assert_eq!((a.name.as_str(), a.vendor.as_str(), a.id.as_str()), ("Brave", "Navegador de internet", "aur:brave-bin"));
+        let b = polish(app("pacman", "linux-firmware", "linux-firmware", "pacman", "1", "", Source::Pacman));
+        assert_eq!((b.name.as_str(), b.vendor.as_str()), ("Linux Firmware", "pacman"));
         assert_eq!(pacman_dir("google-chrome-126.0.1-1"), Some(("google-chrome".into(), "126.0.1-1".into())));
         let entry = "[Desktop Entry]\nType=Application\nName=Chrome\nName[es]=Cromo\nExec=chrome %U\n";
         assert_eq!(parse_desktop(entry), Some("Chrome".into()));
