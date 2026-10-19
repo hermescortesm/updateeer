@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use crate::scan::{self, UPGRADE_TIMEOUT};
 
-const LOOP: &str = r#"d="$1"; uid="$2"; gid="$3"; parent="$4"; token="$5"; mas="$6"; limit="$7"
+const LOOP: &str = r#"d="$1"; uid="$2"; gid="$3"; parent="$4"; token="$5"; mas="$6"; limit="$7"; pre="$8"
 exec 3<>"$d/req"
 echo $$ > "$d/ready"
 while kill -0 "$parent" 2>/dev/null; do
@@ -23,7 +23,9 @@ while kill -0 "$parent" 2>/dev/null; do
     case "$id" in ''|*[!0-9]*) ok=0;; *) ok=1;; esac
     if [ "$tok" = "$token" ] && [ "$ok" = 1 ] && [ "${#id}" -le 12 ] && [ "$(dirname "$resp")" = "$d" ]; then
       # mas runs in the background so a hung download can be stopped: on cancel, or after `limit` seconds.
-      SUDO_UID="$uid" SUDO_GID="$gid" "$mas" upgrade "$id" >"$resp.out" 2>&1 &
+      # $pre puts it in the user's login session (the App Store daemons live there; a plain root
+      # process from the password dialog is outside it and `mas` waits for them forever).
+      $pre env SUDO_UID="$uid" SUDO_GID="$gid" "$mas" upgrade "$id" >"$resp.out" 2>&1 &
       pid=$!; n=0; code=
       while kill -0 "$pid" 2>/dev/null; do
         if [ -e "$resp.cancel" ] || [ "$n" -ge "$limit" ]; then
@@ -91,12 +93,13 @@ fn start(mas_bin: &str, launcher: &dyn Fn(&str) -> Result<(), String>) -> Result
     let (uid, gid) = (id_of("-u")?, id_of("-g")?);
     let q = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
     let command = format!(
-        "/bin/bash -c {} bash {} {uid} {gid} {} {token} {} {} >/dev/null 2>&1 &",
+        "/bin/bash -c {} bash {} {uid} {gid} {} {token} {} {} {} >/dev/null 2>&1 &",
         q(LOOP),
         q(&dir.to_string_lossy()),
         std::process::id(),
         q(mas_bin),
-        UPGRADE_TIMEOUT.as_secs()
+        UPGRADE_TIMEOUT.as_secs(),
+        q(&if cfg!(target_os = "macos") { format!("/bin/launchctl asuser {uid}") } else { String::new() })
     );
     launcher(&command)?;
     let ready = dir.join("ready");
