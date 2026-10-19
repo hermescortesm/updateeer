@@ -25,7 +25,7 @@ while kill -0 "$parent" 2>/dev/null; do
       # mas runs in the background so a hung download can be stopped: on cancel, or after `limit` seconds.
       # $pre puts it in the user's login session (the App Store daemons live there; a plain root
       # process from the password dialog is outside it and `mas` waits for them forever).
-      $pre env SUDO_UID="$uid" SUDO_GID="$gid" "$mas" upgrade "$id" >"$resp.out" 2>&1 &
+      $pre env MAS_NO_AUTO_INDEX=1 SUDO_UID="$uid" SUDO_GID="$gid" "$mas" upgrade "$id" >"$resp.out" 2>&1 &
       pid=$!; n=0; code=
       while kill -0 "$pid" 2>/dev/null; do
         if [ -e "$resp.cancel" ] || [ "$n" -ge "$limit" ]; then
