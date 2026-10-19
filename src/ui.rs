@@ -452,6 +452,8 @@ impl UpdatesApp {
             Sort::Newest => rows.sort_by_key(|&i| (self.apps[i].installed_at.is_none(), std::cmp::Reverse(self.apps[i].installed_at))),
             Sort::Oldest => rows.sort_by_key(|&i| (self.apps[i].installed_at.is_none(), self.apps[i].installed_at)),
         }
+        // Updated apps sink to the bottom, so it is easy to see which ones are done.
+        rows.sort_by_key(|&i| self.queue.status(&self.apps[i].id) == Status::Done);
         rows
     }
 
