@@ -130,6 +130,12 @@ impl Queue {
         }
     }
 
+    /// The next failure of `id` is final: no silent second attempt (it would ask for the
+    /// administrator password again after the user just refused it).
+    pub fn no_retry(&mut self, id: &str) {
+        self.attempts.insert(id.to_string(), MAX_ATTEMPTS - 1);
+    }
+
     /// Records the outcome of a started update. A failure is retried until attempts run out.
     pub fn finish(&mut self, id: &str, result: Result<(), String>) {
         let Some(s) = self.status.get_mut(id) else { return };
@@ -196,6 +202,16 @@ mod tests {
         q.finish("c", Ok(()));
         assert!(!q.is_busy());
         assert_eq!(q.batch_progress(), (3, 3, 100.0));
+    }
+
+    #[test]
+    fn a_refused_password_is_not_retried() {
+        let mut q = q();
+        q.enqueue(["a"]);
+        q.start_ready();
+        q.no_retry("a");
+        q.finish("a", Err("cancelled".into()));
+        assert_eq!(q.status("a"), Status::Failed);
     }
 
     #[test]

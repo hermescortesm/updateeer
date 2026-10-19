@@ -45,6 +45,23 @@ pub fn install(id: &str) -> Result<(), String> {
     }
 }
 
+/// Whether the app can be removed from here (not App Store or hand-installed apps).
+pub fn can_uninstall(id: &str) -> bool {
+    matches!(id.split_once(':').map(|(k, _)| k), Some("cask" | "formula" | "winget" | "scoop" | "choco" | "apt" | "pacman" | "aur" | "dnf" | "zypper" | "apk" | "xbps" | "flatpak" | "snap"))
+}
+
+/// Removes an installed app by its id. Blocks; call it from a worker thread.
+pub fn uninstall(id: &str) -> Result<(), String> {
+    let _one_at_a_time = INSTALL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (kind, name) = id.split_once(':').ok_or_else(|| format!("id no soportado: {id}"))?;
+    match kind {
+        "cask" | "formula" if safe_token(name) => brew(&["uninstall", if kind == "cask" { "--cask" } else { "--formula" }, name], UPGRADE_TIMEOUT, false).map(|_| ()),
+        "winget" | "scoop" | "choco" => winpkg::uninstall(kind, name),
+        "apt" | "pacman" | "aur" | "dnf" | "zypper" | "apk" | "xbps" | "flatpak" | "snap" => linuxpkg::uninstall(kind, name),
+        _ => Err(format!("id no soportado: {id}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -57,6 +74,15 @@ mod tests {
         assert_eq!(args("cask:--force"), None);
         assert_eq!(args("cask:a b"), None);
         assert_eq!(args("mas:123"), None);
+    }
+
+    #[test]
+    fn uninstall_rejects_bad_and_unsupported_ids() {
+        assert!(uninstall("cask:--force").is_err());
+        assert!(uninstall("mas:123").is_err());
+        assert!(uninstall("direct:Foo").is_err());
+        assert!(uninstall("winget:--all").is_err());
+        assert!(can_uninstall("apt:curl") && can_uninstall("flatpak:org.gimp.GIMP") && !can_uninstall("mas:1") && !can_uninstall("direct:x"));
     }
 
     #[test]

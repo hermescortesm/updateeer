@@ -76,6 +76,20 @@ pub fn install(name: &str) -> Result<(), String> {
     .map(|_| ())
 }
 
+/// Removes a package; blocks, so call it from a worker thread.
+pub fn uninstall(kind: &str, name: &str) -> Result<(), String> {
+    if !safe_name(name) {
+        return Err(format!("id no soportado: {kind}:{name}"));
+    }
+    match kind {
+        "winget" => exec(winget_path(), &["uninstall", "--id", name, "--exact", "--silent", "--accept-source-agreements", "--disable-interactivity"], UPGRADE_TIMEOUT),
+        "scoop" => exec(scoop_path(), &["uninstall", name], UPGRADE_TIMEOUT),
+        "choco" => exec(choco_path(), &["uninstall", name, "-y", "--no-progress"], UPGRADE_TIMEOUT),
+        _ => Err(format!("id no soportado: {kind}:{name}")),
+    }
+    .map(|_| ())
+}
+
 /// Blocks until the manager finishes; call it from a worker thread.
 pub fn upgrade(kind: &str, name: &str) -> Result<(), String> {
     if !safe_name(name) {

@@ -1,5 +1,5 @@
-//! Menu bar (macOS) / notification area (Windows) icon with the update count, and the actions of its menu.
-#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
+//! Menu bar (macOS) / notification area (Windows, Linux) icon with the update count, and the actions of its menu.
+#[cfg_attr(not(any(target_os = "macos", windows, target_os = "linux")), allow(dead_code))]
 pub enum Action {
     Open,
     Scan,
@@ -102,7 +102,112 @@ mod imp {
     }
 }
 
-#[cfg(not(any(target_os = "macos", windows)))]
+/// Linux: a StatusNotifierItem (KDE, most panels, GNOME with the AppIndicator extension), spoken
+/// over D-Bus without GTK. When the desktop has no tray the window simply closes, as before.
+#[cfg(target_os = "linux")]
+mod imp {
+    use std::sync::mpsc;
+
+    use eframe::egui;
+    use ksni::blocking::{Handle, TrayMethods};
+    use ksni::menu::{CheckmarkItem, StandardItem};
+
+    use super::Action;
+    use crate::icons;
+
+    struct Model {
+        tx: mpsc::Sender<Action>,
+        ctx: egui::Context,
+        status: String,
+        login: bool,
+        icon: Vec<ksni::Icon>,
+    }
+
+    impl Model {
+        fn send(&self, action: Action) {
+            let _ = self.tx.send(action);
+            self.ctx.request_repaint();
+        }
+    }
+
+    impl ksni::Tray for Model {
+        fn id(&self) -> String {
+            "updateeer".into()
+        }
+
+        fn title(&self) -> String {
+            "Updateeer".into()
+        }
+
+        fn icon_pixmap(&self) -> Vec<ksni::Icon> {
+            self.icon.clone()
+        }
+
+        fn tool_tip(&self) -> ksni::ToolTip {
+            ksni::ToolTip { title: format!("Updateeer — {}", self.status), ..Default::default() }
+        }
+
+        // Left click opens the window; the menu is on the right click.
+        fn activate(&mut self, _x: i32, _y: i32) {
+            self.send(Action::Open);
+        }
+
+        fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
+            let t = crate::i18n::t;
+            vec![
+                StandardItem { label: self.status.clone(), enabled: false, ..Default::default() }.into(),
+                ksni::MenuItem::Separator,
+                StandardItem { label: t("Abrir Updateeer").into(), activate: Box::new(|m: &mut Self| m.send(Action::Open)), ..Default::default() }.into(),
+                StandardItem { label: t("Buscar actualizaciones").into(), activate: Box::new(|m: &mut Self| m.send(Action::Scan)), ..Default::default() }.into(),
+                ksni::MenuItem::Separator,
+                CheckmarkItem { label: t("Abrir al iniciar sesión").into(), checked: self.login, activate: Box::new(|m: &mut Self| m.send(Action::Login)), ..Default::default() }.into(),
+                ksni::MenuItem::Separator,
+                StandardItem { label: t("Salir de Updateeer").into(), activate: Box::new(|m: &mut Self| m.send(Action::Quit)), ..Default::default() }.into(),
+            ]
+        }
+    }
+
+    pub struct Tray {
+        handle: Handle<Model>,
+        shown: (usize, bool),
+        pub rx: mpsc::Receiver<Action>,
+    }
+
+    impl Tray {
+        pub fn new(ctx: &egui::Context, login_on: bool) -> Option<Self> {
+            let glyph = icons::decode_bytes(include_bytes!("../assets/icon.png"))?;
+            // ARGB32, network byte order.
+            let data = glyph.rgba.as_chunks::<4>().0.iter().flat_map(|p| [p[3], p[0], p[1], p[2]]).collect();
+            let icon = vec![ksni::Icon { width: glyph.size[0] as i32, height: glyph.size[1] as i32, data }];
+            let (tx, rx) = mpsc::channel();
+            let model = Model { tx, ctx: ctx.clone(), status: crate::i18n::t("Buscando…").to_string(), login: login_on, icon };
+            // Fails when the desktop has no StatusNotifierWatcher: no tray, the window closes normally.
+            let handle = model.spawn().ok()?;
+            Some(Self { handle, shown: (usize::MAX, false), rx })
+        }
+
+        /// Tooltip and first menu line; cheap to call every frame.
+        pub fn update(&mut self, available: usize, scanning: bool) {
+            if self.shown == (available, scanning) {
+                return;
+            }
+            self.shown = (available, scanning);
+            let text = match (scanning, available) {
+                (true, _) => crate::i18n::t("Buscando actualizaciones…").to_string(),
+                (_, 0) => crate::i18n::t("Todo al día").to_string(),
+                (_, 1) => crate::i18n::t("1 actualización disponible").to_string(),
+                (_, n) => crate::i18n::tf1("{0} actualizaciones disponibles", &n.to_string()),
+            };
+            self.handle.update(|m| m.status = text);
+        }
+
+        pub fn set_login(&self, on: bool) {
+            self.handle.update(|m| m.login = on);
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
 mod imp {
     use std::sync::mpsc;
 
@@ -110,7 +215,7 @@ mod imp {
 
     use super::Action;
 
-    /// No tray icon on this OS (it would need GTK); the window just closes.
+    /// No tray icon on this OS; the window just closes.
     pub struct Tray {
         pub rx: mpsc::Receiver<Action>,
     }
