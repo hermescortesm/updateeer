@@ -167,7 +167,8 @@ pub struct UpdatesApp {
     pub(crate) back: Page,
 }
 
-const CONCURRENCY: usize = 2;
+/// Homebrew downloads in parallel.
+const CONCURRENCY: usize = 5;
 
 impl UpdatesApp {
     pub fn new(ctx: egui::Context, start_hidden: bool) -> Self {
@@ -384,6 +385,7 @@ impl UpdatesApp {
                 self.scan_warning = warning;
                 self.request_icons(&apps);
                 self.queue = Queue::new(apps.iter().map(|a| a.id.clone()), CONCURRENCY);
+                self.queue.set_sizes(apps.iter().filter_map(|a| Some((a.id.clone(), a.size_mb?))));
                 self.apps = apps;
                 self.selected.clear();
                 let pending = std::mem::take(&mut self.update_after_scan);
