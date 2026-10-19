@@ -652,6 +652,26 @@ pub fn upgrade(kind: &str, name: &str) -> Result<(), String> {
     .map(|_| ())
 }
 
+/// Removes an installed package; blocks, so call it from a worker thread.
+pub fn uninstall(kind: &str, name: &str) -> Result<(), String> {
+    if !safe_name(name) {
+        return Err(format!("id no soportado: {kind}:{name}"));
+    }
+    match kind {
+        "apt" => root(&["env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "remove", "-y", name]),
+        // `-Rs` also drops the dependencies nothing else needs, like a normal uninstall.
+        "pacman" | "aur" => root(&["pacman", "-Rs", "--noconfirm", name]),
+        "dnf" => root(&["dnf", "remove", "-y", name]),
+        "zypper" => root(&["zypper", "--non-interactive", "remove", name]),
+        "apk" => root(&["apk", "del", name]),
+        "xbps" => root(&["xbps-remove", "-y", name]),
+        "snap" => root(&["snap", "remove", name]),
+        "flatpak" => exec("flatpak", &["uninstall", "-y", "--noninteractive", name], UPGRADE_TIMEOUT),
+        _ => Err(format!("id no soportado: {kind}:{name}")),
+    }
+    .map(|_| ())
+}
+
 /// Installs a local package file (Updateeer's own update); blocks, so call it from a worker thread.
 pub fn install_file(kind: &str, file: &str) -> Result<(), String> {
     match kind {

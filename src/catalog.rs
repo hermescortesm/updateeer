@@ -63,7 +63,6 @@ pub const CATALOG: &[Entry] = &[
     e("Visual Studio Code", Dev, "visual-studio-code", "Microsoft.VisualStudioCode", "com.visualstudio.code"),
     e("Cursor", Dev, "cursor", "Anysphere.Cursor", ""),
     e("Zed", Dev, "zed", "ZedIndustries.Zed", "dev.zed.Zed"),
-    e("Sublime Text", Dev, "sublime-text", "SublimeHQ.SublimeText.4", "com.sublimetext.three"),
     e("IntelliJ IDEA Community", Dev, "intellij-idea-ce", "JetBrains.IntelliJIDEA.Community", "com.jetbrains.IntelliJ-IDEA-Community"),
     e("PyCharm Community", Dev, "pycharm-ce", "JetBrains.PyCharm.Community", "com.jetbrains.PyCharm-Community"),
     e("Android Studio", Dev, "android-studio", "Google.AndroidStudio", "com.google.AndroidStudio"),
@@ -73,7 +72,6 @@ pub const CATALOG: &[Entry] = &[
     e("Postman", Dev, "postman", "Postman.Postman", "com.getpostman.Postman"),
     e("Insomnia", Dev, "insomnia", "Insomnia.Insomnia", "rest.insomnia.Insomnia"),
     e("DBeaver", Dev, "dbeaver-community", "DBeaver.DBeaver.Community", "io.dbeaver.DBeaverCommunity"),
-    e("TablePlus", Dev, "tableplus", "TablePlus.TablePlus", ""),
     e("iTerm2", Dev, "iterm2", "", ""),
     e("Warp", Dev, "warp", "Warp.Warp", ""),
     e("Ghostty", Dev, "ghostty", "", ""),
@@ -87,7 +85,6 @@ pub const CATALOG: &[Entry] = &[
     e("Wireshark", Dev, "wireshark-app", "WiresharkFoundation.Wireshark", "org.wireshark.Wireshark"),
     e("VirtualBox", Dev, "virtualbox", "Oracle.VirtualBox", ""),
     e("UTM", Dev, "utm", "", ""),
-    e("Fork", Dev, "fork", "Fork.Fork", ""),
     // Utilities
     e("Raycast", Utilities, "raycast", "", ""),
     e("Rectangle", Utilities, "rectangle", "", ""),
@@ -111,7 +108,6 @@ pub const CATALOG: &[Entry] = &[
     e("Tailscale", Utilities, "tailscale-app", "Tailscale.Tailscale", ""),
     e("qBittorrent", Utilities, "qbittorrent", "qBittorrent.qBittorrent", "org.qbittorrent.qBittorrent"),
     e("Bitwarden", Utilities, "bitwarden", "Bitwarden.Bitwarden", "com.bitwarden.desktop"),
-    e("1Password", Utilities, "1password", "AgileBits.1Password", ""),
     e("KeePassXC", Utilities, "keepassxc", "KeePassXCTeam.KeePassXC", "org.keepassxc.KeePassXC"),
     // Communication
     e("Slack", Chat, "slack", "SlackTechnologies.Slack", "com.slack.Slack"),

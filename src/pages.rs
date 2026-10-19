@@ -67,6 +67,12 @@ pub(crate) enum Inst {
     Running(std::time::Instant),
     Done,
     Failed(String),
+    /// "Uninstall" was pressed: waiting for the confirmation.
+    Confirm,
+    /// Being removed since.
+    Removing(std::time::Instant),
+    /// The removal failed (the app is still there).
+    RemoveFailed(String),
 }
 
 type Found = Result<Vec<App>, String>;
@@ -76,8 +82,8 @@ pub(crate) struct Discover {
     cat: Cat,
     catalog: Vec<App>,
     installs: std::collections::HashMap<String, Inst>,
-    tx: mpsc::Sender<(String, Result<(), String>)>,
-    rx: mpsc::Receiver<(String, Result<(), String>)>,
+    tx: mpsc::Sender<(String, bool, Result<(), String>)>,
+    rx: mpsc::Receiver<(String, bool, Result<(), String>)>,
     /// A free-text search in flight, and the last one's results (with the text they were for).
     search_rx: Option<mpsc::Receiver<Found>>,
     results: Vec<App>,
@@ -92,16 +98,47 @@ impl Discover {
     }
 }
 
+/// The progress shown for a job whose real progress is unknown: it creeps toward 90%.
+fn estimated_progress(since: &std::time::Instant) -> f32 {
+    90.0 * (1.0 - (-since.elapsed().as_secs_f32() / 20.0).exp())
+}
+
+/// What a row shows while an install or removal runs: the phase, a percentage and a bar.
+fn busy_cell(ui: &mut Ui, phase: &str, p: f32) {
+    ui.vertical(|ui| {
+        ui.set_width(130.0);
+        // Content is ~26px tall in a 68px row: push it to the vertical center.
+        ui.add_space(21.0);
+        ui.spacing_mut().item_spacing.y = 6.0;
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(phase).size(12.0).color(text_2()));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.label(RichText::new(format!("{}%", p.round())).monospace().size(12.0).color(accent_text()));
+            });
+        });
+        widgets::progress_bar(ui, p / 100.0, 5.0);
+    });
+    ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+}
+
 impl UpdatesApp {
     fn poll_discover(&mut self) {
-        while let Ok((id, result)) = self.discover.rx.try_recv() {
-            match result {
-                Ok(()) => {
+        while let Ok((id, removed, result)) = self.discover.rx.try_recv() {
+            match (removed, result) {
+                (false, Ok(())) => {
                     self.discover.installs.insert(id, Inst::Done);
                     self.installed_stale = true;
                 }
-                Err(e) => {
+                (false, Err(e)) => {
                     self.discover.installs.insert(id, Inst::Failed(e));
+                }
+                // Gone: the row goes back to "Install" once the installed list is read again.
+                (true, Ok(())) => {
+                    self.discover.installs.remove(&id);
+                    self.installed_stale = true;
+                }
+                (true, Err(e)) => {
+                    self.discover.installs.insert(id, Inst::RemoveFailed(e));
                 }
             }
         }
@@ -121,7 +158,18 @@ impl UpdatesApp {
         let (tx, ctx) = (self.discover.tx.clone(), self.ctx.clone());
         thread::spawn(move || {
             let result = crate::upgrade::install(&id);
-            let _ = tx.send((id, result));
+            let _ = tx.send((id, false, result));
+            ctx.request_repaint();
+        });
+    }
+
+    /// Removes `installed_id` (what the system has) for the Discover row `row_id`.
+    fn start_uninstall(&mut self, row_id: String, installed_id: String) {
+        self.discover.installs.insert(row_id.clone(), Inst::Removing(std::time::Instant::now()));
+        let (tx, ctx) = (self.discover.tx.clone(), self.ctx.clone());
+        thread::spawn(move || {
+            let result = crate::upgrade::uninstall(&installed_id);
+            let _ = tx.send((row_id, true, result));
             ctx.request_repaint();
         });
     }
@@ -182,8 +230,16 @@ impl UpdatesApp {
                 }
             }
         }
-        let have: std::collections::HashSet<String> = self.installed.iter().map(|a| a.id.to_lowercase()).collect();
-        let mut install: Option<String> = None;
+        // What the system already has, found by id and by name: the catalog may know an app under
+        // another manager (Flatpak) than the one that installed it (pacman, Snap, ...).
+        let norm = |s: &str| s.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase();
+        let mut have: std::collections::HashMap<String, App> = std::collections::HashMap::new();
+        for a in &self.installed {
+            have.entry(a.id.to_lowercase()).or_insert_with(|| a.clone());
+            have.entry(format!("name:{}", norm(&a.name))).or_insert_with(|| a.clone());
+        }
+        let (mut install, mut ask, mut cancel): (Option<String>, Option<String>, Option<String>) = (None, None, None);
+        let mut uninstall: Option<(String, String)> = None;
         card(ui, |ui| {
             ui.set_height(ui.available_height());
             if rows.is_empty() {
@@ -201,33 +257,42 @@ impl UpdatesApp {
                         let (rect, left, right) = list_row(ui);
                         name_cell(ui, rect, left, app, self.icons.get(&app.id));
                         let state = self.discover.installs.get(&app.id);
-                        let installed = have.contains(&app.id.to_lowercase()) || matches!(state, Some(Inst::Done));
-                        if let Some(Inst::Failed(e)) = state {
-                            cell(ui, rect, left + 290.0, right - 150.0, Layout::left_to_right(Align::Center), |ui| {
+                        let present = have.get(&app.id.to_lowercase()).or_else(|| have.get(&format!("name:{}", norm(&app.name))));
+                        let installed = present.is_some() || matches!(state, Some(Inst::Done));
+                        // Where it comes from: the manager that installed it when it is there already.
+                        let source = present.map_or(app.source, |p| p.source);
+                        cell(ui, rect, right - 350.0, right - 262.0, Layout::left_to_right(Align::Center), |ui| widgets::chip(ui, source.label()));
+                        if let Some(Inst::Failed(e) | Inst::RemoveFailed(e)) = state {
+                            cell(ui, rect, left + 290.0, right - 360.0, Layout::left_to_right(Align::Center), |ui| {
                                 let first = e.lines().find(|l| !l.trim().is_empty()).unwrap_or(e);
                                 ui.add(egui::Label::new(RichText::new(tf1("Falló: {0}", first)).size(12.5).color(egui::Color32::from_rgb(0xFF, 0x7A, 0x6B))).truncate()).on_hover_text(e);
                             });
                         }
-                        cell(ui, rect, right - 140.0, right, Layout::right_to_left(Align::Center), |ui| {
-                            if installed {
+                        cell(ui, rect, right - 250.0, right, Layout::right_to_left(Align::Center), |ui| match state {
+                            Some(Inst::Running(since)) => {
+                                let p = estimated_progress(since);
+                                busy_cell(ui, if p < 70.0 { t("Descargando") } else { t("Instalando") }, p);
+                            }
+                            Some(Inst::Removing(since)) => busy_cell(ui, t("Desinstalando"), estimated_progress(since)),
+                            Some(Inst::Confirm) => {
+                                if widgets::button(ui, None, t("Confirmar"), Kind::Primary, 34.0, true).clicked() {
+                                    uninstall = present.map(|p| (app.id.clone(), p.id.clone()));
+                                    if uninstall.is_none() {
+                                        cancel = Some(app.id.clone());
+                                    }
+                                }
+                                if widgets::button(ui, None, t("Cancelar"), Kind::Soft, 34.0, true).clicked() {
+                                    cancel = Some(app.id.clone());
+                                }
+                            }
+                            // Already on the system: never "Install" again, only "Uninstall" when possible.
+                            _ if installed => {
+                                if present.is_some_and(|p| crate::upgrade::can_uninstall(&p.id)) && widgets::button(ui, None, t("Desinstalar"), Kind::Soft, 34.0, true).clicked() {
+                                    ask = Some(app.id.clone());
+                                }
                                 ui.label(RichText::new(t("Instalada")).size(13.0).family(semibold()).color(accent_text()));
-                            } else if let Some(Inst::Running(since)) = state {
-                                let p = 90.0 * (1.0 - (-since.elapsed().as_secs_f32() / 20.0).exp());
-                                ui.vertical(|ui| {
-                                    ui.set_width(130.0);
-                                    // Content is ~26px tall in a 68px row: push it to the vertical center.
-                                    ui.add_space(21.0);
-                                    ui.spacing_mut().item_spacing.y = 6.0;
-                                    ui.horizontal(|ui| {
-                                        ui.label(RichText::new(if p < 70.0 { t("Descargando") } else { t("Instalando") }).size(12.0).color(text_2()));
-                                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                            ui.label(RichText::new(format!("{}%", p.round())).monospace().size(12.0).color(accent_text()));
-                                        });
-                                    });
-                                    widgets::progress_bar(ui, p / 100.0, 5.0);
-                                });
-                                ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
-                            } else {
+                            }
+                            _ => {
                                 let label = if matches!(state, Some(Inst::Failed(_))) { t("Reintentar") } else { t("Instalar") };
                                 if widgets::button(ui, Some(Icon::Download), label, Kind::Soft, 34.0, true).clicked() {
                                     install = Some(app.id.clone());
@@ -240,6 +305,15 @@ impl UpdatesApp {
         });
         if let Some(id) = install {
             self.start_install(id);
+        }
+        if let Some(id) = ask {
+            self.discover.installs.insert(id, Inst::Confirm);
+        }
+        if let Some(id) = cancel {
+            self.discover.installs.remove(&id);
+        }
+        if let Some((row, installed_id)) = uninstall {
+            self.start_uninstall(row, installed_id);
         }
     }
 
