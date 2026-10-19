@@ -127,6 +127,8 @@ pub struct UpdatesApp {
     /// Updateeer replacing itself with the new package (Linux).
     pub(crate) self_update_rx: Option<Receiver<Result<(), String>>>,
     pub(crate) self_update_error: Option<String>,
+    /// The progress bar as drawn: it eases toward the real progress.
+    update_shown: std::cell::Cell<f32>,
     show_notes: bool,
     pub(crate) page: Page,
     pub(crate) settings: Settings,
@@ -191,6 +193,7 @@ impl UpdatesApp {
             release_rx: None,
             self_update_rx: None,
             self_update_error: None,
+            update_shown: std::cell::Cell::new(0.0),
             show_notes: false,
             page: if cfg!(target_os = "macos") && !settings.onboarded { Page::Welcome } else { Page::Updates },
             settings,
@@ -248,6 +251,7 @@ impl UpdatesApp {
     pub(crate) fn start_self_update(&mut self) {
         let Some(release) = self.new_release.clone().filter(|_| self.self_update_rx.is_none()) else { return };
         self.self_update_error = None;
+        self.update_shown.set(0.0);
         let (tx, ctx) = (mpsc::channel(), self.ctx.clone());
         let sender = tx.0;
         thread::spawn(move || {
@@ -255,6 +259,22 @@ impl UpdatesApp {
             ctx.request_repaint();
         });
         self.self_update_rx = Some(tx.1);
+    }
+
+    /// Phase, percentage and bar of the running self-update. The bar eases toward its target so a
+    /// fast download is still seen filling up.
+    pub(crate) fn update_progress(&self, ui: &mut Ui) {
+        let (phase, target) = crate::selfupdate::progress();
+        let dt = ui.input(|i| i.stable_dt).min(0.1);
+        let shown = self.update_shown.get() + (target - self.update_shown.get()) * (1.0 - (-dt * 5.0).exp());
+        self.update_shown.set(shown);
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(phase).size(12.0).color(text_2()));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.label(RichText::new(format!("{}%", (shown * 100.0).round())).monospace().size(12.0).color(accent_text()));
+            });
+        });
+        widgets::progress_bar(ui, shown, 5.0);
     }
 
     fn poll_self_update(&mut self) {
@@ -452,6 +472,9 @@ impl eframe::App for UpdatesApp {
         self.poll_scan();
         self.poll_release();
         self.poll_self_update();
+        if self.self_update_rx.is_some() {
+            self.ctx.request_repaint_after(std::time::Duration::from_millis(33));
+        }
         self.poll_icons();
         while let Ok((id, result)) = self.done_rx.try_recv() {
             let error = result.as_ref().err().cloned();
@@ -838,11 +861,15 @@ impl UpdatesApp {
                         ui.label(RichText::new(format!("Updateeer {} está disponible", release.version)).size(14.0).family(semibold()));
                         let detail = match (&self.self_update_error, installing, can_install) {
                             (Some(e), _, _) => format!("No se pudo actualizar: {e}"),
-                            (_, true, _) => "Descargando e instalando… la app se reiniciará sola.".to_string(),
+                            (_, true, _) => "La app se reiniciará sola al terminar.".to_string(),
                             (_, _, true) => format!("Tienes la {}. Se descarga, se verifica y la app se reinicia sola.", env!("CARGO_PKG_VERSION")),
                             _ => format!("Tienes la {}. Descárgala desde la página de la versión.", env!("CARGO_PKG_VERSION")),
                         };
                         ui.label(RichText::new(detail).size(13.0).color(muted()));
+                        if installing && self.self_update_error.is_none() {
+                            ui.add_space(4.0);
+                            self.update_progress(ui);
+                        }
                     });
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         let label = if can_install { "Instalar y reiniciar" } else { "Descargar" };

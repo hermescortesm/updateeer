@@ -3,6 +3,7 @@
 //! release page.
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::time::Duration;
 
 use serde_json::Value;
@@ -19,6 +20,8 @@ pub struct Asset {
     pub url: String,
     /// Lowercase hex SHA-256 published by GitHub, when it provides one.
     pub sha256: Option<String>,
+    /// Size in bytes, for the progress bar.
+    pub size: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -50,10 +53,29 @@ fn parse(json: &str) -> Result<Release, String> {
         .filter_map(|a| {
             let url = a["browser_download_url"].as_str().filter(|u| u.starts_with(DOWNLOAD_PREFIX))?;
             let sha256 = a["digest"].as_str().and_then(|d| d.strip_prefix("sha256:")).map(str::to_lowercase);
-            Some(Asset { name: a["name"].as_str()?.to_string(), url: url.to_string(), sha256 })
+            Some(Asset { name: a["name"].as_str()?.to_string(), url: url.to_string(), sha256, size: a["size"].as_u64().unwrap_or(0) })
         })
         .collect();
     Ok(Release { version: tag.trim_start_matches('v').to_string(), url: url.to_string(), assets, notes: v["body"].as_str().unwrap_or("").to_string() })
+}
+
+/// Where the update is: phase (0 download, 1 verify, 2 install) and how much of the download is
+/// done, in thousandths. Read by the window to draw the progress bar.
+static PHASE: AtomicU8 = AtomicU8::new(0);
+static FETCHED: AtomicU32 = AtomicU32::new(0);
+
+fn set_phase(phase: u8) {
+    PHASE.store(phase, Ordering::SeqCst);
+}
+
+/// `(what is happening, fraction of the whole update 0..1)`: the download takes the first 70%.
+pub fn progress() -> (&'static str, f32) {
+    let fetched = FETCHED.load(Ordering::SeqCst) as f32 / 1000.0;
+    match PHASE.load(Ordering::SeqCst) {
+        0 => ("Descargando", fetched * 0.7),
+        1 => ("Verificando", 0.75),
+        _ => ("Instalando", 0.9),
+    }
 }
 
 /// The package kind this system installs and its file suffix: `(manager, suffix)`.
@@ -122,10 +144,13 @@ fn wanted_file() -> Result<(String, &'static str), String> {
 pub fn install(release: &Release) -> Result<(), String> {
     let (suffix, manager) = wanted_file()?;
     let asset = release.assets.iter().find(|a| a.name.ends_with(&suffix)).ok_or("Esta versión no trae un instalador para tu sistema")?;
+    set_phase(0);
+    FETCHED.store(0, Ordering::SeqCst);
     let want = expected_sha(asset, &release.notes).ok_or("La versión no publica una suma SHA-256 para verificar el instalador")?;
     let dir = std::env::temp_dir().join(format!("updateeer-update-{}", std::process::id()));
     let exe = exe_path()?;
     let file = download(asset, &want, &dir)?;
+    set_phase(2);
     // On Windows the installer outlives this process, so its folder is left in place.
     let result = if cfg!(target_os = "macos") {
         replace_bundle(&file, &dir)
@@ -148,7 +173,26 @@ fn download(asset: &Asset, want: &str, dir: &Path) -> Result<PathBuf, String> {
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     let file = dir.join(&asset.name);
     let file_str = file.to_str().ok_or("Ruta no válida")?;
-    scan::run(Command::new("curl"), &["-fL", "--proto", "=https", "--max-time", "600", "-o", file_str, &asset.url], Duration::from_secs(620))?;
+    // The file grows while curl runs: its size against the published size is the progress.
+    let done = std::sync::Arc::new(AtomicBool::new(false));
+    let watcher = {
+        let (done, file, total) = (done.clone(), file.clone(), asset.size);
+        std::thread::spawn(move || {
+            while !done.load(Ordering::SeqCst) {
+                let got = std::fs::metadata(&file).map_or(0, |m| m.len());
+                if let Some(part) = (got.min(total) * 1000).checked_div(total) {
+                    FETCHED.store(part as u32, Ordering::SeqCst);
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        })
+    };
+    let fetched = scan::run(Command::new("curl"), &["-fL", "--proto", "=https", "--max-time", "600", "-o", file_str, &asset.url], Duration::from_secs(620));
+    done.store(true, Ordering::SeqCst);
+    let _ = watcher.join();
+    fetched?;
+    FETCHED.store(1000, Ordering::SeqCst);
+    set_phase(1);
     if sha256(file_str)? != want {
         return Err("La suma SHA-256 del instalador no coincide; no se instaló".into());
     }
@@ -312,7 +356,7 @@ mod tests {
         assert_eq!(package_kind(|k| k == "pacman"), Some(("pacman", ".pkg.tar.zst")));
         assert_eq!(package_kind(|_| false), None);
         let hex = "a".repeat(64);
-        let plain = Asset { name: "p.rpm".into(), url: String::new(), sha256: None };
+        let plain = Asset { name: "p.rpm".into(), url: String::new(), sha256: None, size: 0 };
         assert_eq!(expected_sha(&plain, &format!("```\n{hex}  p.rpm\n```")), Some(hex));
         assert_eq!(expected_sha(&plain, "nothing here"), None);
     }
