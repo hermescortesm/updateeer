@@ -2,6 +2,7 @@
 
 mod autostart;
 mod catalog;
+mod friendly;
 mod history;
 mod discover;
 mod icons;
