@@ -22,13 +22,13 @@ impl Lang {
     /// Name in its own language, as shown in the pickers.
     pub fn native(self) -> &'static str {
         match self {
-            Lang::Es => "Español",
+            Lang::Es => "Español (Spanish)",
             Lang::En => "English",
-            Lang::Pt => "Português",
-            Lang::Fr => "Français",
-            Lang::De => "Deutsch",
-            Lang::Ja => "日本語",
-            Lang::Zh => "简体中文",
+            Lang::Pt => "Português (Portuguese)",
+            Lang::Fr => "Français (French)",
+            Lang::De => "Deutsch (German)",
+            Lang::Ja => "日本語 (Japanese)",
+            Lang::Zh => "简体中文 (Chinese)",
         }
     }
 
@@ -133,6 +133,19 @@ pub fn months() -> [&'static str; 12] {
         Lang::Ja => ["1月", "2月", "3月", "4月", "5月", "6月", "7月", "8月", "9月", "10月", "11月", "12月"],
         Lang::Zh => ["1月", "2月", "3月", "4月", "5月", "6月", "7月", "8月", "9月", "10月", "11月", "12月"],
     }
+}
+
+/// Every Japanese and Chinese text, month names and language names: what the fonts must cover.
+#[cfg(test)]
+pub fn cjk_text() -> String {
+    let mut all: String = TABLE.iter().flat_map(|(_, row)| [row[4], row[5]]).collect();
+    for lang in [Lang::Ja, Lang::Zh] {
+        set(lang);
+        all.extend(months());
+    }
+    set(Lang::Es);
+    all.extend(Lang::ALL.iter().flat_map(|l| l.native().chars()));
+    all
 }
 
 /// `[en, pt, fr, de, ja, zh]` for each Spanish text.
@@ -334,6 +347,7 @@ const TABLE: &[(&str, [&str; 6])] = &[
     ("{0} sem", ["{0} wk", "{0} sem", "{0} sem.", "{0} Wo.", "{0}週", "{0}周"]),
     ("{0} m", ["{0} mo", "{0} m", "{0} mois", "{0} Mon.", "{0}か月", "{0}个月"]),
     ("{0} a", ["{0} y", "{0} a", "{0} an(s)", "{0} J.", "{0}年", "{0}年"]),
+    ("Revisión incompleta", ["Check incomplete", "Verificação incompleta", "Vérification incomplète", "Prüfung unvollständig", "確認が完了していません", "检查不完整"]),
     ("winget no está instalado", ["winget is not installed", "winget não está instalado", "winget n'est pas installé", "winget ist nicht installiert", "winget がインストールされていません", "未安装 winget"]),
     ("No se pudo abrir Terminal", ["Could not open Terminal", "Não foi possível abrir o Terminal", "Impossible d'ouvrir le Terminal", "Terminal konnte nicht geöffnet werden", "ターミナルを開けませんでした", "无法打开“终端”"]),
     ("mas no está instalado (brew install mas)", ["mas is not installed (brew install mas)", "mas não está instalado (brew install mas)", "mas n'est pas installé (brew install mas)", "mas ist nicht installiert (brew install mas)", "mas がインストールされていません (brew install mas)", "未安装 mas（brew install mas）"]),

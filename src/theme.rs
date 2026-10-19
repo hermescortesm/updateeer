@@ -55,7 +55,10 @@ pub fn display() -> FontFamily {
 /// Static, Latin-subset builds of the design's fonts (egui cannot use variable fonts).
 pub fn install_fonts(ctx: &egui::Context, lang: crate::i18n::Lang) {
     let mut fonts = FontDefinitions::default();
-    let embedded: [(&str, &[u8]); 4] = [
+    let embedded: [(&str, &[u8]); 6] = [
+        // Noto Sans CJK (SIL OFL), cut down to the characters the interface uses.
+        ("noto-jp", include_bytes!("../assets/fonts/NotoSansCJKjp-Subset.otf")),
+        ("noto-sc", include_bytes!("../assets/fonts/NotoSansCJKsc-Subset.otf")),
         ("geist", include_bytes!("../assets/fonts/Geist-Regular.ttf")),
         ("geist-semibold", include_bytes!("../assets/fonts/Geist-SemiBold.ttf")),
         ("geist-mono", include_bytes!("../assets/fonts/GeistMono-Regular.ttf")),
@@ -64,7 +67,7 @@ pub fn install_fonts(ctx: &egui::Context, lang: crate::i18n::Lang) {
     for (name, bytes) in embedded {
         fonts.font_data.insert(name.into(), Arc::new(FontData::from_static(bytes)));
     }
-    set_families(&mut fonts, false);
+    set_families(&mut fonts, false, lang);
     ctx.set_fonts(fonts.clone());
 
     // Fallback for scripts the subset lacks (CJK, accents in app names). These OS fonts are
@@ -73,7 +76,7 @@ pub fn install_fonts(ctx: &egui::Context, lang: crate::i18n::Lang) {
     std::thread::spawn(move || {
         let Some(bytes) = fallback_font_paths(lang).into_iter().find_map(|p| std::fs::read(p).ok()) else { return };
         fonts.font_data.insert("os-fallback".into(), Arc::new(FontData::from_owned(bytes)));
-        set_families(&mut fonts, true);
+        set_families(&mut fonts, true, lang);
         ctx.set_fonts(fonts);
         ctx.request_repaint();
     });
@@ -112,9 +115,11 @@ fn fallback_font_paths(lang: crate::i18n::Lang) -> Vec<&'static str> {
     paths
 }
 
-fn set_families(fonts: &mut FontDefinitions, fallback: bool) {
+fn set_families(fonts: &mut FontDefinitions, fallback: bool, lang: crate::i18n::Lang) {
+    // The embedded CJK subsets always follow the Latin font, the language's own variant first.
+    let cjk = if lang == crate::i18n::Lang::Ja { ["noto-jp", "noto-sc"] } else { ["noto-sc", "noto-jp"] };
     let chain = |own: &str| {
-        let mut v = vec![own.to_string()];
+        let mut v = vec![own.to_string(), cjk[0].to_string(), cjk[1].to_string()];
         if fallback {
             v.push("os-fallback".into());
         }
@@ -185,4 +190,30 @@ pub fn tile_color(hue: f32) -> Color32 {
         (y * 255.0).round() as u8
     };
     Color32::from_rgb(enc(r), enc(g), enc(bl))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::i18n::Lang;
+
+    /// The language pickers show every language in its own script, so the embedded fonts must draw
+    /// the Japanese and Chinese names without any system font.
+    #[test]
+    fn embedded_fonts_draw_the_language_names() {
+        let ctx = egui::Context::default();
+        let mut fonts = FontDefinitions::default();
+        for (name, bytes) in [("geist", &include_bytes!("../assets/fonts/Geist-Regular.ttf")[..]), ("noto-jp", &include_bytes!("../assets/fonts/NotoSansCJKjp-Subset.otf")[..]), ("noto-sc", &include_bytes!("../assets/fonts/NotoSansCJKsc-Subset.otf")[..])] {
+            fonts.font_data.insert(name.into(), Arc::new(FontData::from_static(bytes)));
+        }
+        set_families(&mut fonts, false, Lang::Zh);
+        fonts.families.insert(FontFamily::Proportional, vec!["geist".into(), "noto-sc".into(), "noto-jp".into()]);
+        ctx.set_fonts(fonts);
+        let mut out = ctx.run_ui(Default::default(), |_| {});
+        out.textures_delta.clear();
+        let id = egui::FontId::proportional(14.0);
+        for c in crate::i18n::cjk_text().chars().filter(|c| !c.is_ascii()) {
+            assert!(ctx.fonts_mut(|f| f.has_glyph(&id, c)), "missing glyph {c} (U+{:04X})", c as u32);
+        }
+    }
 }

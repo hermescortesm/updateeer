@@ -675,6 +675,8 @@ impl UpdatesApp {
             t("Actualizando…").to_string()
         } else if self.queue.failed_count() > 0 {
             tf1("{0} fallidas", &self.queue.failed_count().to_string())
+        } else if self.scan_warning.is_some() {
+            t("Revisión incompleta").to_string()
         } else {
             t("Todo al día").to_string()
         };
