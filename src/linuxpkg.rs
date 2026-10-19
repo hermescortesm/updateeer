@@ -56,9 +56,11 @@ pub fn desktops(files: &str) -> Vec<String> {
     files.lines().filter_map(|l| l.trim().trim_start_matches('/').strip_prefix("usr/share/applications/").filter(|f| f.ends_with(".desktop") && !f.contains('/')).map(str::to_string)).collect()
 }
 
-/// Launcher details of installed packages, `group:package` -> (name, categories), filled while
+/// Launcher details of installed packages, `group:package` -> (name, categories, icon), filled while
 /// the package databases are read.
-static META: Mutex<Option<HashMap<String, (String, String)>>> = Mutex::new(None);
+type Meta = (String, String, String);
+
+static META: Mutex<Option<HashMap<String, Meta>>> = Mutex::new(None);
 
 /// Package managers sharing one package database.
 fn group(prefix: &str) -> &str {
@@ -69,9 +71,9 @@ fn group(prefix: &str) -> &str {
     }
 }
 
-/// `Name` (Spanish when there is one) and `Categories` of a launcher file.
-pub fn parse_desktop_meta(text: &str) -> Option<(String, String)> {
-    let (mut in_entry, mut name, mut local, mut cats) = (false, None, None, String::new());
+/// `Name` (Spanish when there is one), `Categories` and `Icon` of a launcher file.
+pub fn parse_desktop_meta(text: &str) -> Option<Meta> {
+    let (mut in_entry, mut name, mut local, mut cats, mut icon) = (false, None, None, String::new(), String::new());
     for line in text.lines().map(str::trim) {
         if line.starts_with('[') {
             in_entry = line == "[Desktop Entry]";
@@ -80,11 +82,12 @@ pub fn parse_desktop_meta(text: &str) -> Option<(String, String)> {
                 "Name" => name = Some(v.to_string()),
                 k if k.starts_with("Name[es") => local = local.or(Some(v.to_string())),
                 "Categories" => cats = v.to_string(),
+                "Icon" => icon = v.to_string(),
                 _ => {}
             }
         }
     }
-    local.or(name).map(|n| (n, cats))
+    local.or(name).map(|n| (n, cats, icon))
 }
 
 /// Remembers the launcher of `package` (read from the first of `files` that exists).
@@ -96,7 +99,7 @@ fn note_desktop(prefix: &str, package: &str, files: &[String]) {
 }
 
 /// Flatpak and Snap export their launchers to fixed folders.
-fn exported_desktop(prefix: &str, id: &str) -> Option<(String, String)> {
+fn exported_desktop(prefix: &str, id: &str) -> Option<Meta> {
     let home = std::env::var("HOME").unwrap_or_default();
     let paths = match prefix {
         "flatpak" => vec![format!("/var/lib/flatpak/exports/share/applications/{id}.desktop"), format!("{home}/.local/share/flatpak/exports/share/applications/{id}.desktop")],
@@ -104,6 +107,29 @@ fn exported_desktop(prefix: &str, id: &str) -> Option<(String, String)> {
         _ => return None,
     };
     paths.iter().find_map(|p| fs::read_to_string(p).ok().as_deref().and_then(parse_desktop_meta))
+}
+
+/// The PNG icon of an installed app, found from its launcher's `Icon=` entry.
+pub fn icon_file(a: &App) -> Option<PathBuf> {
+    let (prefix, id) = a.id.split_once(':')?;
+    let meta = META.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|m| m.get(&format!("{}:{id}", group(prefix))).cloned()).or_else(|| exported_desktop(prefix, id))?;
+    resolve_icon(&meta.2)
+}
+
+/// An `Icon=` value is a path or a theme icon name; only PNG is read (no SVG renderer here).
+fn resolve_icon(icon: &str) -> Option<PathBuf> {
+    if icon.is_empty() {
+        return None;
+    }
+    if icon.starts_with('/') {
+        return (icon.ends_with(".png") && fs::metadata(icon).is_ok()).then(|| PathBuf::from(icon));
+    }
+    let home = std::env::var("HOME").unwrap_or_default();
+    let roots = ["/usr/share/icons/hicolor".to_string(), format!("{home}/.local/share/icons/hicolor"), "/var/lib/flatpak/exports/share/icons/hicolor".into(), format!("{home}/.local/share/flatpak/exports/share/icons/hicolor")];
+    let sizes = ["64x64", "48x48", "96x96", "128x128", "72x72", "256x256", "32x32", "192x192", "512x512"];
+    let themed = sizes.iter().flat_map(|sz| roots.iter().map(move |r| PathBuf::from(format!("{r}/{sz}/apps/{icon}.png"))));
+    let loose = ["/usr/share/pixmaps", "/usr/share/icons"].iter().map(|d| PathBuf::from(format!("{d}/{icon}.png")));
+    themed.chain(loose).find(|p| p.is_file())
 }
 
 /// Readable name and short Spanish description instead of the package name: from the launcher
@@ -120,11 +146,11 @@ fn polish(mut a: App) -> App {
     let name = match (&known, &meta) {
         (Some((n, _)), _) => n.to_string(),
         (None, _) if own => a.name.clone(),
-        (None, Some((n, _))) => friendly::tidy(n),
+        (None, Some((n, _, _))) => friendly::tidy(n),
         (None, None) => friendly::display(id),
     };
     let generic = ["", "pacman", "AUR", "apt", "dnf", "zypper", "apk", "xbps", "snap", "Flatpak"].contains(&a.vendor.as_str()) || own;
-    let desc = known.map(|(_, d)| d).or_else(|| meta.as_ref().and_then(|(_, c)| friendly::describe(c)));
+    let desc = known.map(|(_, d)| d).or_else(|| meta.as_ref().and_then(|(_, c, _)| friendly::describe(c)));
     if let Some(d) = desc {
         a.vendor = d.to_string();
     } else if generic && own {
@@ -230,6 +256,9 @@ pub fn direct_apps(known: &[App]) -> Vec<App> {
                 continue;
             }
             seen.insert(name.to_lowercase());
+            if let Some(meta) = parse_desktop_meta(&text) {
+                META.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(format!("direct:{name}"), meta);
+            }
             apps.push(app("direct", &name, &name, "Descarga directa", "", "", Source::Direct));
         }
     }
@@ -864,9 +893,11 @@ mod tests {
     fn launchers_and_aur() {
         assert_eq!(desktops("usr/bin/chrome\nusr/share/applications/google-chrome.desktop\n"), ["google-chrome.desktop"]);
         assert!(desktops("usr/share/applications/\nusr/share/applications/sub/x.desktop\nusr/bin/x\n").is_empty());
-        assert_eq!(parse_desktop_meta("[Desktop Entry]\nName=Brave Web Browser\nName[es]=Navegador Brave\nCategories=Network;WebBrowser;\n"), Some(("Navegador Brave".into(), "Network;WebBrowser;".into())));
+        assert_eq!(parse_desktop_meta("[Desktop Entry]\nName=Brave Web Browser\nName[es]=Navegador Brave\nCategories=Network;WebBrowser;\n"), Some(("Navegador Brave".into(), "Network;WebBrowser;".into(), String::new())));
         let a = polish(app("aur", "brave-bin", "brave-bin", "AUR", "1", "", Source::Aur));
         assert_eq!((a.name.as_str(), a.vendor.as_str(), a.id.as_str()), ("Brave", "Navegador de internet", "aur:brave-bin"));
+        assert_eq!(resolve_icon("/nonexistent/x.png"), None);
+        assert_eq!(resolve_icon(""), None);
         let b = polish(app("pacman", "linux-firmware", "linux-firmware", "pacman", "1", "", Source::Pacman));
         assert_eq!((b.name.as_str(), b.vendor.as_str()), ("Linux Firmware", "pacman"));
         assert_eq!(pacman_dir("google-chrome-126.0.1-1"), Some(("google-chrome".into(), "126.0.1-1".into())));
@@ -895,7 +926,6 @@ mod tests {
         assert_eq!(none_if_silent(Err("error: boom".into())), Err("error: boom".into()));
     }
 
-    #[cfg(unix)]
     #[test]
     fn network_failures_are_retried() {
         let mut calls = 0;
@@ -908,6 +938,7 @@ mod tests {
         assert!(retry_network(|| { calls += 1; Err("No space left on device".into()) }).is_err() && calls == 1);
     }
 
+    #[cfg(unix)]
     #[test]
     fn one_shell_runs_many_commands() {
         let mut sh = spawn_shell(&mut Command::new("/bin/sh")).unwrap();

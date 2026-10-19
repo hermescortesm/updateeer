@@ -572,7 +572,7 @@ impl UpdatesApp {
             let installing = self.self_update_rx.is_some();
             let version_note = match (&self.new_release, &self.self_update_error) {
                 (_, Some(e)) => format!("No se pudo actualizar: {e}"),
-                (Some(_), _) if installing => "Descargando e instalando… la app se reiniciará sola".to_string(),
+                (Some(_), _) if installing => "La app se reiniciará sola al terminar".to_string(),
                 (Some(r), _) => format!("Hay una versión nueva: {}", r.version),
                 _ => "Updateeer".to_string(),
             };
@@ -589,6 +589,9 @@ impl UpdatesApp {
                 }
                 ui.label(RichText::new(env!("CARGO_PKG_VERSION")).monospace().size(13.0).color(text_2()));
             });
+            if installing && self.self_update_error.is_none() {
+                Frame::new().inner_margin(egui::Margin::symmetric(18, 10)).show(ui, |ui| self.update_progress(ui));
+            }
             if cfg!(target_os = "macos") {
                 setting_row(ui, "Homebrew", "Ruta que usa para buscar y actualizar.", |ui| {
                     ui.label(RichText::new(scan::brew_path().unwrap_or("no instalado")).monospace().size(13.0).color(text_2()));
