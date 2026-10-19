@@ -690,7 +690,8 @@ impl UpdatesApp {
                     self.selected.clear();
                 }
                 let idle = !self.scanning() && !self.queue.is_busy();
-                if widgets::button(ui, Some(Icon::Refresh), "Buscar actualizaciones", Kind::Ghost, 44.0, idle).clicked() {
+                let (ic, label) = if self.scanning() { (Icon::Busy, "Buscando…") } else { (Icon::Refresh, "Buscar actualizaciones") };
+                if widgets::button(ui, Some(ic), label, Kind::Ghost, 44.0, idle).clicked() {
                     self.start_scan();
                 }
             });
@@ -782,6 +783,9 @@ impl UpdatesApp {
                         to_update.extend(visible_ids.iter().filter(|id| self.selected.contains(*id)).cloned());
                     }
                 });
+                if self.scanning() {
+                    widgets::busy_bar(ui, 3.0);
+                }
                 column_titles(ui);
                 ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
                     if rows.is_empty() {
