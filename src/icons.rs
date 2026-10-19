@@ -1,10 +1,11 @@
-//! Real app icons on macOS: the bundle's `.icns` converted to a small PNG by the system `sips`,
-//! cached on disk. Anything missing falls back to the letter tile.
+//! Real app icons: on macOS the bundle's `.icns` converted to a small PNG by the system `sips`
+//! (cached on disk), on Linux the PNG named by the app's launcher. Anything missing falls back to
+//! the bundled logo and then to the letter tile.
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use crate::{local, logos};
+use crate::{linuxpkg, local, logos};
 use crate::model::App;
 
 pub struct Icon {
@@ -18,7 +19,7 @@ pub fn wants_icon(app: &App) -> bool {
 }
 
 fn local_possible(app: &App) -> bool {
-    cfg!(target_os = "macos") && !app.id.starts_with("formula:")
+    (cfg!(target_os = "macos") && !app.id.starts_with("formula:")) || cfg!(target_os = "linux")
 }
 
 fn cache_file(id: &str) -> Option<PathBuf> {
@@ -35,6 +36,9 @@ pub fn load(app: &App) -> Option<Icon> {
 fn local_icon(app: &App) -> Option<Icon> {
     if !local_possible(app) {
         return None;
+    }
+    if cfg!(target_os = "linux") {
+        return decode(std::io::BufReader::new(File::open(linuxpkg::icon_file(app)?).ok()?));
     }
     let cache = cache_file(&app.id)?;
     if !cache.exists() {
