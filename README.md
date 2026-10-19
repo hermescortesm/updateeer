@@ -16,13 +16,13 @@
 - **Updates from a queue.** Update one app, a selection, or everything at once. Two updates run in parallel, failed ones are retried once, and each row shows its progress.
 - **Cancel any time.** Cancelling stops the running updates (and everything they launched) and puts the apps back to "available".
 - **Shows everything installed.** An *Installed* page lists every app with its source, version and install date, including apps you downloaded by hand (macOS).
-- **Discover new apps.** A curated catalog of about 100 popular apps (browsers, development, utilities, communication, media, productivity, games) you can install with one click, plus an online search through Homebrew, winget, Flathub and apt.
+- **Discover new apps.** A curated catalog of about 90 free apps (browsers, development, utilities, communication, media, productivity, games) you can install with one click, plus an online search through Homebrew, winget, Flathub and apt. Each row shows where the app comes from; apps that are already on the system offer *Uninstall* instead of *Install*, even when another package manager installed them.
 - **Keeps a history.** Every update, with its date and result, survives restarts.
 - **Detail page for each app.** Versions, source, vendor, size and dates in one place.
 - **Search, filter and sort.** By name, source (App Store, Homebrew, winget, apt, Flatpak…), type (apps or command-line tools), install date and more.
 - **Real icons.** Uses each app's own icon, a built-in library of 125 brand logos, or a colored letter tile.
 - **Automatic updates (optional).** Apps that are closed update on their own. For apps that are open — or that need administrator rights (apt, pacman, dnf, zypper, apk, xbps, Chocolatey) — Updateeer asks once, *update now* or *later*, grouped in a single question.
-- **Runs in the background.** Menu bar (macOS) or notification-area (Windows) icon with the number of pending updates, and optional *open at login* on every system. On Linux the window minimizes instead (no tray icon yet).
+- **Runs in the background.** Menu bar (macOS) or notification-area (Windows) icon with the number of pending updates, and optional *open at login* on every system. On Linux it uses a StatusNotifierItem tray icon (KDE and most panels; GNOME needs the AppIndicator extension). Closing the window keeps the app in the tray; without a tray the window just closes.
 - **Light and dark themes**, following your system by default.
 - **Small and fast.** Native Rust + [egui](https://github.com/emilk/egui), a single binary of a few MB, and no CPU use while idle.
 
