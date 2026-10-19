@@ -186,15 +186,21 @@ fn clean_exe(exe: &Path) -> PathBuf {
     exe.to_str().and_then(|s| s.strip_suffix(" (deleted)")).map_or_else(|| exe.to_path_buf(), PathBuf::from)
 }
 
+/// Starts `prog args` a moment later from a detached shell. The new copy must wait: while this
+/// one is still alive it holds the single-instance lock and the newcomer would just exit.
+fn start_after_exit(prog: &Path, args: &[&str]) -> Result<(), String> {
+    spawn_detached(Command::new("/bin/sh").args(["-c", "sleep 1; exec \"$@\"", "sh"]).arg(prog).args(args))
+}
+
 fn relaunch(exe: &Path) -> Result<(), String> {
-    spawn_detached(&mut Command::new(exe))
+    start_after_exit(exe, &[])
 }
 
 /// macOS: mounts the dmg, swaps the running bundle for the new one and opens it.
 fn replace_bundle(dmg: &Path, dir: &Path) -> Result<(), String> {
     let bundle = app_bundle().ok_or("No se encontró la app instalada")?;
     swap_from_dmg(dmg, &dir.join("mnt"), &bundle)?;
-    spawn_detached(Command::new("/usr/bin/open").arg("-n").arg(&bundle))
+    start_after_exit(Path::new("/usr/bin/open"), &["-n", bundle.to_str().ok_or("Ruta no válida")?])
 }
 
 fn swap_from_dmg(dmg: &Path, mount: &Path, bundle: &Path) -> Result<(), String> {
