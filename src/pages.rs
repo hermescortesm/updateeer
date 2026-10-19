@@ -456,12 +456,6 @@ impl UpdatesApp {
                 Status::Failed => t("Falló").into(),
             }
         };
-        let command = match kind {
-            "cask" => format!("brew upgrade --cask {token}"),
-            "formula" => format!("brew upgrade --formula {token}"),
-            "mas" => format!("mas upgrade {token}"),
-            _ => String::new(),
-        };
         let mut rows: Vec<(&str, String)> = vec![
             (t("Origen"), format!("{} · {kind_label}", app.source.label())),
             (t("Estado"), state),
@@ -476,9 +470,6 @@ impl UpdatesApp {
             rows.push((t("Tamaño de descarga"), crate::model::format_size(app.size_mb)));
         }
         rows.push((t("Paquete"), token.to_string()));
-        if is_update && !command.is_empty() {
-            rows.push((t("Comando"), command));
-        }
         if let Some(e) = self.queue.error(&app.id) {
             rows.push((t("Último error"), e.to_string()));
         }
@@ -777,7 +768,7 @@ fn value_row(ui: &mut Ui, title: &str, value: &str) {
             ui.label(RichText::new(title).size(14.0).family(semibold()).color(text_2()));
         });
         cell(ui, rect, left + 220.0, right, Layout::right_to_left(Align::Center), |ui| {
-            ui.add(egui::Label::new(RichText::new(value).monospace().size(13.0).color(text())).truncate().selectable(true)).on_hover_text(value);
+            ui.add(egui::Label::new(RichText::new(value).monospace().size(13.0).color(text())).truncate()).on_hover_text(value);
         });
     });
 }
