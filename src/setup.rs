@@ -21,7 +21,7 @@ pub fn open_homebrew_installer() -> Result<(), String> {
         .status()
         .map_err(|e| e.to_string())?
         .success();
-    if ok { Ok(()) } else { Err("No se pudo abrir Terminal".into()) }
+    if ok { Ok(()) } else { Err(crate::i18n::t("No se pudo abrir Terminal").into()) }
 }
 
 /// `brew install mas`; blocks, so call it from a worker thread.

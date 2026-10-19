@@ -28,11 +28,11 @@ mod imp {
 
     impl Tray {
         pub fn new(ctx: &egui::Context, login_on: bool) -> Option<Self> {
-            let status = MenuItem::new("Buscando…", false, None);
-            let open = MenuItem::with_id("open", "Abrir Updateeer", true, None);
-            let scan = MenuItem::with_id("scan", "Buscar actualizaciones", true, None);
-            let login = CheckMenuItem::with_id("login", "Abrir al iniciar sesión", true, login_on, None);
-            let quit = MenuItem::with_id("quit", "Salir de Updateeer", true, None);
+            let status = MenuItem::new(crate::i18n::t("Buscando…"), false, None);
+            let open = MenuItem::with_id("open", crate::i18n::t("Abrir Updateeer"), true, None);
+            let scan = MenuItem::with_id("scan", crate::i18n::t("Buscar actualizaciones"), true, None);
+            let login = CheckMenuItem::with_id("login", crate::i18n::t("Abrir al iniciar sesión"), true, login_on, None);
+            let quit = MenuItem::with_id("quit", crate::i18n::t("Salir de Updateeer"), true, None);
             let menu = Menu::new();
             let sep = PredefinedMenuItem::separator;
             menu.append_items(&[&status, &sep(), &open, &scan, &sep(), &login, &sep(), &quit]).ok()?;
@@ -83,10 +83,10 @@ mod imp {
             }
             self.shown = (available, scanning);
             let text = match (scanning, available) {
-                (true, _) => "Buscando actualizaciones…".to_string(),
-                (_, 0) => "Todo al día".to_string(),
-                (_, 1) => "1 actualización disponible".to_string(),
-                (_, n) => format!("{n} actualizaciones disponibles"),
+                (true, _) => crate::i18n::t("Buscando actualizaciones…").to_string(),
+                (_, 0) => crate::i18n::t("Todo al día").to_string(),
+                (_, 1) => crate::i18n::t("1 actualización disponible").to_string(),
+                (_, n) => crate::i18n::tf1("{0} actualizaciones disponibles", &n.to_string()),
             };
             self.status.set_text(&text);
             // Only macOS can print a number next to the icon; elsewhere it goes in the tooltip.

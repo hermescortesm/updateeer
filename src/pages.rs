@@ -6,6 +6,7 @@ use eframe::egui::{self, Align, Frame, Layout, RichText, ScrollArea, Sense, Stro
 
 use std::time::SystemTime;
 
+use crate::i18n::{t, tf1, Lang};
 use crate::model::{self, App};
 use crate::notify;
 use crate::scan;
@@ -146,9 +147,9 @@ impl UpdatesApp {
         if self.installed_stale && self.installed_rx.is_none() {
             self.start_installed();
         }
-        header(ui, "Descubrir", "Apps populares para instalar con un clic");
+        header(ui, t("Descubrir"), t("Apps populares para instalar con un clic"));
         if !discover::available() {
-            card(ui, |ui| empty(ui, "Hace falta un gestor de paquetes (Homebrew, winget o Flatpak) para instalar apps."));
+            card(ui, |ui| empty(ui, t("Hace falta un gestor de paquetes (Homebrew, winget o Flatpak) para instalar apps.")));
             return;
         }
         let q = self.query.trim().to_lowercase();
@@ -159,10 +160,10 @@ impl UpdatesApp {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 10.0;
             let options: Vec<(Cat, &str)> = Cat::ALL.iter().map(|c| (*c, c.label())).collect();
-            combo(ui, "Categoría", &mut self.discover.cat, &options);
+            combo(ui, t("Categoría"), &mut self.discover.cat, &options);
             if discover::safe_query(&q) {
                 ui.add_space(8.0);
-                let label = if searching { "Buscando…" } else { "Buscar más resultados en línea" };
+                let label = if searching { t("Buscando…") } else { t("Buscar más resultados en línea") };
                 search = widgets::button(ui, Some(Icon::Search), label, Kind::Soft, 34.0, !searching).clicked();
             }
         });
@@ -187,9 +188,9 @@ impl UpdatesApp {
             ui.set_height(ui.available_height());
             if rows.is_empty() {
                 let msg = match (&self.discover.search_error, searching) {
-                    (Some(e), _) => format!("No se pudo buscar: {e}"),
-                    (_, true) => "Buscando…".to_string(),
-                    _ => "Nada coincide. Prueba «Buscar más resultados en línea».".to_string(),
+                    (Some(e), _) => tf1("No se pudo buscar: {0}", &e.to_string()),
+                    (_, true) => t("Buscando…").to_string(),
+                    _ => t("Nada coincide. Prueba «Buscar más resultados en línea».").to_string(),
                 };
                 empty(ui, &msg);
                 return;
@@ -204,12 +205,12 @@ impl UpdatesApp {
                         if let Some(Inst::Failed(e)) = state {
                             cell(ui, rect, left + 290.0, right - 150.0, Layout::left_to_right(Align::Center), |ui| {
                                 let first = e.lines().find(|l| !l.trim().is_empty()).unwrap_or(e);
-                                ui.add(egui::Label::new(RichText::new(format!("Falló: {first}")).size(12.5).color(egui::Color32::from_rgb(0xFF, 0x7A, 0x6B))).truncate()).on_hover_text(e);
+                                ui.add(egui::Label::new(RichText::new(tf1("Falló: {0}", first)).size(12.5).color(egui::Color32::from_rgb(0xFF, 0x7A, 0x6B))).truncate()).on_hover_text(e);
                             });
                         }
                         cell(ui, rect, right - 140.0, right, Layout::right_to_left(Align::Center), |ui| {
                             if installed {
-                                ui.label(RichText::new("Instalada").size(13.0).family(semibold()).color(accent_text()));
+                                ui.label(RichText::new(t("Instalada")).size(13.0).family(semibold()).color(accent_text()));
                             } else if let Some(Inst::Running(since)) = state {
                                 let p = 90.0 * (1.0 - (-since.elapsed().as_secs_f32() / 20.0).exp());
                                 ui.vertical(|ui| {
@@ -218,7 +219,7 @@ impl UpdatesApp {
                                     ui.add_space(21.0);
                                     ui.spacing_mut().item_spacing.y = 6.0;
                                     ui.horizontal(|ui| {
-                                        ui.label(RichText::new(if p < 70.0 { "Descargando" } else { "Instalando" }).size(12.0).color(text_2()));
+                                        ui.label(RichText::new(if p < 70.0 { t("Descargando") } else { t("Instalando") }).size(12.0).color(text_2()));
                                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                             ui.label(RichText::new(format!("{}%", p.round())).monospace().size(12.0).color(accent_text()));
                                         });
@@ -227,7 +228,7 @@ impl UpdatesApp {
                                 });
                                 ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
                             } else {
-                                let label = if matches!(state, Some(Inst::Failed(_))) { "Reintentar" } else { "Instalar" };
+                                let label = if matches!(state, Some(Inst::Failed(_))) { t("Reintentar") } else { t("Instalar") };
                                 if widgets::button(ui, Some(Icon::Download), label, Kind::Soft, 34.0, true).clicked() {
                                     install = Some(app.id.clone());
                                 }
@@ -259,9 +260,10 @@ impl UpdatesApp {
         let Ok(result) = rx.try_recv() else { return };
         self.installed_rx = None;
         match result {
-            Ok((apps, _)) => {
+            Ok((apps, warning)) => {
                 self.request_icons(&apps);
                 self.installed = apps;
+                self.installed_warning = warning;
             }
             Err(e) => self.installed_error = Some(e),
         }
@@ -277,11 +279,14 @@ impl UpdatesApp {
         let rows: Vec<usize> =
             (0..self.installed.len()).filter(|&i| q.is_empty() || self.installed[i].name.to_lowercase().contains(&q)).collect();
         let sub = if loading && self.installed.is_empty() {
-            "Leyendo tus apps…".to_string()
+            t("Leyendo tus apps…").to_string()
         } else {
-            format!("{} apps instaladas", self.installed.len())
+            match &self.installed_warning {
+                Some(w) => format!("{} · {w}", tf1("{0} apps instaladas", &self.installed.len().to_string())),
+                None => tf1("{0} apps instaladas", &self.installed.len().to_string()),
+            }
         };
-        header(ui, "Instaladas", &sub);
+        header(ui, t("Instaladas"), &sub);
         ui.horizontal(|ui| ui.with_layout(Layout::right_to_left(Align::Center), |ui| search_field(ui, &mut self.query)));
         ui.add_space(22.0);
         let mut open: Option<App> = None;
@@ -289,10 +294,10 @@ impl UpdatesApp {
             ui.set_height(ui.available_height());
             if rows.is_empty() {
                 let msg = match (&self.installed_error, loading) {
-                    (Some(e), _) => format!("No se pudo leer: {e}"),
-                    (_, true) => "Cargando…".into(),
-                    _ if self.installed.is_empty() => "No se encontraron apps instaladas.".into(),
-                    _ => "Ninguna app coincide con tu búsqueda.".into(),
+                    (Some(e), _) => tf1("No se pudo leer: {0}", &e.to_string()),
+                    (_, true) => t("Cargando…").into(),
+                    _ if self.installed.is_empty() => t("No se encontraron apps instaladas.").into(),
+                    _ => t("Ninguna app coincide con tu búsqueda.").into(),
                 };
                 empty(ui, &msg);
                 return;
@@ -331,7 +336,7 @@ impl UpdatesApp {
             self.page = self.back;
             return;
         };
-        if widgets::button(ui, None, "Volver", Kind::Ghost, 34.0, true).clicked() {
+        if widgets::button(ui, None, t("Volver"), Kind::Ghost, 34.0, true).clicked() {
             self.page = self.back;
             return;
         }
@@ -349,7 +354,7 @@ impl UpdatesApp {
                 ui.label(RichText::new(&app.vendor).size(14.0).color(muted()));
             });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let label = if status == Status::Failed { "Reintentar" } else { "Actualizar" };
+                let label = if status == Status::Failed { t("Reintentar") } else { t("Actualizar") };
                 if can_update && widgets::button(ui, Some(Icon::Download), label, Kind::Primary, 44.0, true).clicked() {
                     self.queue.enqueue([app.id.as_str()]);
                 }
@@ -359,21 +364,21 @@ impl UpdatesApp {
 
         let (kind, token) = app.id.split_once(':').unwrap_or(("", &app.id));
         let kind_label = match kind {
-            "cask" => "app (cask)",
-            "mas" => "app de la tienda",
-            "direct" => "descarga directa",
-            "formula" => "fórmula",
+            "cask" => t("app (cask)"),
+            "mas" => t("app de la tienda"),
+            "direct" => t("descarga directa"),
+            "formula" => t("fórmula"),
             _ => "paquete",
         };
         let state = if !is_update {
-            "Instalada".to_string()
+            t("Instalada").to_string()
         } else {
             match status {
-                Status::Available => "Actualización disponible".into(),
-                Status::Queued => "En cola".into(),
-                Status::Updating(p) => format!("Actualizando {}%", p.round()),
-                Status::Done => "Actualizada".into(),
-                Status::Failed => "Falló".into(),
+                Status::Available => t("Actualización disponible").into(),
+                Status::Queued => t("En cola").into(),
+                Status::Updating(p) => tf1("Actualizando {0}%", &p.round().to_string()),
+                Status::Done => t("Actualizada").into(),
+                Status::Failed => t("Falló").into(),
             }
         };
         let command = match kind {
@@ -383,24 +388,24 @@ impl UpdatesApp {
             _ => String::new(),
         };
         let mut rows: Vec<(&str, String)> = vec![
-            ("Origen", format!("{} · {kind_label}", app.source.label())),
-            ("Estado", state),
-            ("Versión instalada", app.from.clone()),
+            (t("Origen"), format!("{} · {kind_label}", app.source.label())),
+            (t("Estado"), state),
+            (t("Versión instalada"), app.from.clone()),
         ];
         if let Some(t) = app.installed_at {
             let when = format!("{} · {}", model::date(t), model::ago(t, SystemTime::now()));
-            rows.push(("Instalada", when));
+            rows.push((crate::i18n::t("Instalada"), when));
         }
         if is_update {
-            rows.push(("Versión nueva", app.to.clone()));
-            rows.push(("Tamaño de descarga", crate::model::format_size(app.size_mb)));
+            rows.push((t("Versión nueva"), app.to.clone()));
+            rows.push((t("Tamaño de descarga"), crate::model::format_size(app.size_mb)));
         }
-        rows.push(("Paquete", token.to_string()));
+        rows.push((t("Paquete"), token.to_string()));
         if is_update && !command.is_empty() {
-            rows.push(("Comando", command));
+            rows.push((t("Comando"), command));
         }
         if let Some(e) = self.queue.error(&app.id) {
-            rows.push(("Último error", e.to_string()));
+            rows.push((t("Último error"), e.to_string()));
         }
         card(ui, |ui| {
             for (title, value) in &rows {
@@ -411,12 +416,12 @@ impl UpdatesApp {
 
     pub(crate) fn history_page(&mut self, ui: &mut Ui) {
         let n = self.history.len();
-        let sub = if n == 0 { "Todavía no has actualizado nada".to_string() } else { format!("{n} actualizaciones registradas") };
-        header(ui, "Historial", &sub);
+        let sub = if n == 0 { t("Todavía no has actualizado nada").to_string() } else { tf1("{0} actualizaciones registradas", &n.to_string()) };
+        header(ui, t("Historial"), &sub);
         card(ui, |ui| {
             ui.set_height(ui.available_height());
             if self.history.is_empty() {
-                empty(ui, "Aquí aparecerán las apps que actualices.");
+                empty(ui, t("Aquí aparecerán las apps que actualices."));
                 return;
             }
             ScrollArea::vertical().auto_shrink(false).show_rows(ui, 68.0, n, |ui, range| {
@@ -442,12 +447,12 @@ impl UpdatesApp {
                         });
                         cell(ui, rect, right - 150.0, right, Layout::right_to_left(Align::Center), |ui| match &entry.error {
                             None => {
-                                ui.label(RichText::new("Actualizada").size(13.0).family(semibold()).color(ok()));
+                                ui.label(RichText::new(t("Actualizada")).size(13.0).family(semibold()).color(ok()));
                                 let (r, _) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::hover());
                                 widgets::icon(ui, r, Icon::Check, ok(), 2.6);
                             }
                             Some(e) => {
-                                ui.label(RichText::new("Falló").size(13.0).family(semibold()).color(muted())).on_hover_text(e);
+                                ui.label(RichText::new(t("Falló")).size(13.0).family(semibold()).color(muted())).on_hover_text(e);
                             }
                         });
                     });
@@ -456,10 +461,37 @@ impl UpdatesApp {
         });
     }
 
+    /// First run: pick the interface language (the system one is preselected).
+    pub(crate) fn language_page(&mut self, ui: &mut Ui) {
+        header(ui, t("Elige tu idioma"), t("Podrás cambiarlo después en Ajustes."));
+        let mut picked = None;
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = Vec2::new(12.0, 12.0);
+            for lang in Lang::ALL {
+                let kind = if lang == crate::i18n::get() { Kind::Primary } else { Kind::Soft };
+                if widgets::button(ui, None, lang.native(), kind, 44.0, true).clicked() {
+                    picked = Some(lang);
+                }
+            }
+        });
+        if let Some(lang) = picked {
+            self.set_language(lang);
+            self.settings.save();
+            self.page = if cfg!(target_os = "macos") && !self.settings.onboarded { Page::Welcome } else { Page::Updates };
+        }
+    }
+
+    /// Switches the interface language now and remembers it.
+    pub(crate) fn set_language(&mut self, lang: Lang) {
+        crate::i18n::set(lang);
+        self.settings.lang = Some(lang);
+        crate::theme::install_fonts(&self.ctx, lang);
+    }
+
     /// First-run checklist (macOS): the permission that lets Updateeer modify apps, and the tools it uses.
     pub(crate) fn welcome_page(&mut self, ui: &mut Ui) {
         use crate::permissions::Access;
-        header(ui, "Bienvenido a Updateeer", "Antes de actualizar nada, comprueba que todo está listo");
+        header(ui, t("Bienvenido a Updateeer"), t("Antes de actualizar nada, comprueba que todo está listo"));
         let (brew, mas) = self.tools;
         let access = self.access;
         let installing = self.mas_install_running();
@@ -468,30 +500,30 @@ impl UpdatesApp {
             ui.label(RichText::new(text).size(13.0).family(semibold()).color(if ok { accent_text() } else { muted() }));
         };
         card(ui, |ui| {
-            setting_row(ui, "Modificar apps", "macOS pide el permiso «Gestión de apps» para que Updateeer pueda actualizar las apps de Aplicaciones. Actívalo en Ajustes del Sistema → Privacidad y seguridad.", |ui| {
+            setting_row(ui, t("Modificar apps"), t("macOS pide el permiso «Gestión de apps» para que Updateeer pueda actualizar las apps de Aplicaciones. Actívalo en Ajustes del Sistema → Privacidad y seguridad."), |ui| {
                 if access == Access::Granted {
-                    status(ui, "Listo", true);
+                    status(ui, t("Listo"), true);
                 } else {
-                    open_perm = widgets::button(ui, None, "Abrir ajustes", Kind::Primary, 34.0, true).clicked();
-                    recheck = widgets::button(ui, None, "Comprobar", Kind::Soft, 34.0, true).clicked();
-                    status(ui, if access == Access::Denied { "Falta" } else { "Sin comprobar" }, false);
+                    open_perm = widgets::button(ui, None, t("Abrir ajustes"), Kind::Primary, 34.0, true).clicked();
+                    recheck = widgets::button(ui, None, t("Comprobar"), Kind::Soft, 34.0, true).clicked();
+                    status(ui, if access == Access::Denied { t("Falta") } else { t("Sin comprobar") }, false);
                 }
             });
-            setting_row(ui, "Homebrew", "Lo usa para buscar y actualizar apps y herramientas. Se instala desde Terminal y pide tu contraseña.", |ui| {
+            setting_row(ui, "Homebrew", t("Lo usa para buscar y actualizar apps y herramientas. Se instala desde Terminal y pide tu contraseña."), |ui| {
                 if brew {
-                    status(ui, "Instalado", true);
+                    status(ui, t("Instalado"), true);
                 } else {
-                    install_brew = widgets::button(ui, None, "Instalar Homebrew", Kind::Primary, 34.0, true).clicked();
-                    status(ui, "Falta", false);
+                    install_brew = widgets::button(ui, None, t("Instalar Homebrew"), Kind::Primary, 34.0, true).clicked();
+                    status(ui, t("Falta"), false);
                 }
             });
-            setting_row(ui, "mas (App Store)", "Herramienta pequeña, se instala con Homebrew. Sin ella no se ven las actualizaciones de la App Store.", |ui| {
+            setting_row(ui, t("mas (App Store)"), t("Herramienta pequeña, se instala con Homebrew. Sin ella no se ven las actualizaciones de la App Store."), |ui| {
                 if mas {
-                    status(ui, "Instalado", true);
+                    status(ui, t("Instalado"), true);
                 } else {
-                    let label = if installing { "Instalando…" } else { "Instalar mas" };
+                    let label = if installing { t("Instalando…") } else { t("Instalar mas") };
                     install_mas = widgets::button(ui, None, label, Kind::Primary, 34.0, brew && !installing).clicked();
-                    status(ui, if brew { "Falta" } else { "Necesita Homebrew" }, false);
+                    status(ui, if brew { t("Falta") } else { t("Necesita Homebrew") }, false);
                 }
             });
         });
@@ -501,8 +533,8 @@ impl UpdatesApp {
             ui.add_space(10.0);
         }
         ui.horizontal(|ui| {
-            done = widgets::button(ui, None, "Continuar", Kind::Primary, 40.0, true).clicked();
-            ui.label(RichText::new("Puedes volver aquí desde Ajustes → Permisos.").size(12.5).color(faint()));
+            done = widgets::button(ui, None, t("Continuar"), Kind::Primary, 40.0, true).clicked();
+            ui.label(RichText::new(t("Puedes volver aquí desde Ajustes → Permisos.")).size(12.5).color(faint()));
         });
         if open_perm {
             crate::permissions::open_settings();
@@ -524,24 +556,25 @@ impl UpdatesApp {
     }
 
     pub(crate) fn settings_page(&mut self, ui: &mut Ui) {
-        header(ui, "Ajustes", "Cómo busca Updateeer");
+        header(ui, t("Ajustes"), t("Cómo busca Updateeer"));
         let before = self.settings;
         let mut want_login = None;
+        let mut pick_language: Option<Lang> = None;
         let mut want_welcome = false;
         let mut install_now = false;
         card(ui, |ui| {
-            setting_row(ui, "Búsqueda automática", "Busca actualizaciones sola mientras la app esté abierta.", |ui| {
+            setting_row(ui, t("Búsqueda automática"), t("Busca actualizaciones sola mientras la app esté abierta."), |ui| {
                 widgets::toggle(ui, &mut self.settings.auto);
             });
             if notify::supported() {
-                setting_row(ui, "Actualizar solas las apps cerradas", "Las que estén abiertas te avisan con una notificación: actualizar ahora o más tarde.", |ui| {
+                setting_row(ui, t("Actualizar solas las apps cerradas"), t("Las que estén abiertas te avisan con una notificación: actualizar ahora o más tarde."), |ui| {
                     widgets::toggle(ui, &mut self.settings.auto_update);
                 });
             }
-            setting_row(ui, "Avisar de versiones nuevas de Updateeer", "Consulta GitHub al buscar actualizaciones. Es la única conexión que hace la app por su cuenta.", |ui| {
+            setting_row(ui, t("Avisar de versiones nuevas de Updateeer"), t("Consulta GitHub al buscar actualizaciones. Es la única conexión que hace la app por su cuenta."), |ui| {
                 widgets::toggle(ui, &mut self.settings.check_updates);
             });
-            setting_row(ui, "Frecuencia", "Cada cuánto se repite la búsqueda.", |ui| {
+            setting_row(ui, t("Frecuencia"), t("Cada cuánto se repite la búsqueda."), |ui| {
                 Frame::new()
                     .fill(field())
                     .stroke(Stroke::new(1.0, tint(20)))
@@ -559,19 +592,29 @@ impl UpdatesApp {
                     });
             });
             if crate::autostart::supported() {
-                let desc = self.login_error.clone().unwrap_or_else(|| "Se abre en la barra de menú al encender el equipo.".into());
+                let desc = self.login_error.clone().unwrap_or_else(|| t("Se abre en la barra de menú al encender el equipo.").into());
                 let mut on = self.login;
-                setting_row(ui, "Abrir al iniciar sesión", &desc, |ui| {
+                setting_row(ui, t("Abrir al iniciar sesión"), &desc, |ui| {
                     if widgets::toggle(ui, &mut on).changed() {
                         want_login = Some(on);
                     }
                 });
             }
-            setting_row(ui, "Apariencia", "Claro, oscuro o el del sistema.", |ui| {
+            setting_row(ui, t("Idioma"), t("Idioma de la interfaz."), |ui| {
+                let current = self.settings.lang.unwrap_or_else(crate::i18n::get);
+                egui::ComboBox::from_id_salt("language").selected_text(current.native()).show_ui(ui, |ui| {
+                    for lang in Lang::ALL {
+                        if ui.selectable_label(lang == current, lang.native()).clicked() {
+                            pick_language = Some(lang);
+                        }
+                    }
+                });
+            });
+            setting_row(ui, t("Apariencia"), t("Claro, oscuro o el del sistema."), |ui| {
                 Frame::new().fill(field()).stroke(Stroke::new(1.0, tint(20))).corner_radius(12).inner_margin(4).show(ui, |ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
                     ui.horizontal(|ui| {
-                        for (mode, label) in [(ThemeMode::System, "Sistema"), (ThemeMode::Light, "Claro"), (ThemeMode::Dark, "Oscuro")] {
+                        for (mode, label) in [(ThemeMode::System, t("Sistema")), (ThemeMode::Light, t("Claro")), (ThemeMode::Dark, t("Oscuro"))] {
                             if segment(ui, label, self.settings.theme == mode).clicked() {
                                 self.settings.theme = mode;
                             }
@@ -580,21 +623,21 @@ impl UpdatesApp {
                 });
             });
             if cfg!(target_os = "macos") {
-                setting_row(ui, "Permisos", "Gestión de apps, Homebrew y mas: lo que necesita para actualizar.", |ui| {
-                    want_welcome = widgets::button(ui, None, "Revisar", Kind::Soft, 34.0, true).clicked();
+                setting_row(ui, t("Permisos"), t("Gestión de apps, Homebrew y mas: lo que necesita para actualizar."), |ui| {
+                    want_welcome = widgets::button(ui, None, t("Revisar"), Kind::Soft, 34.0, true).clicked();
                 });
             }
             let can_install = crate::selfupdate::can_self_install();
             let installing = self.self_update_rx.is_some();
             let version_note = match (&self.new_release, &self.self_update_error) {
-                (_, Some(e)) => format!("No se pudo actualizar: {e}"),
-                (Some(_), _) if installing => "La app se reiniciará sola al terminar".to_string(),
-                (Some(r), _) => format!("Hay una versión nueva: {}", r.version),
+                (_, Some(e)) => tf1("No se pudo actualizar: {0}", &e.to_string()),
+                (Some(_), _) if installing => t("La app se reiniciará sola al terminar").to_string(),
+                (Some(r), _) => tf1("Hay una versión nueva: {0}", &r.version.clone()),
                 _ => "Updateeer".to_string(),
             };
-            setting_row(ui, "Versión", &version_note, |ui| {
+            setting_row(ui, t("Versión"), &version_note, |ui| {
                 if let Some(r) = &self.new_release {
-                    let label = if can_install { "Instalar y reiniciar" } else { "Descargar" };
+                    let label = if can_install { t("Instalar y reiniciar") } else { t("Descargar") };
                     if widgets::button(ui, Some(Icon::Download), label, Kind::Primary, 34.0, !installing).clicked() {
                         if can_install {
                             install_now = true;
@@ -609,8 +652,8 @@ impl UpdatesApp {
                 Frame::new().inner_margin(egui::Margin::symmetric(18, 10)).show(ui, |ui| self.update_progress(ui));
             }
             if cfg!(target_os = "macos") {
-                setting_row(ui, "Homebrew", "Ruta que usa para buscar y actualizar.", |ui| {
-                    ui.label(RichText::new(scan::brew_path().unwrap_or("no instalado")).monospace().size(13.0).color(text_2()));
+                setting_row(ui, "Homebrew", t("Ruta que usa para buscar y actualizar."), |ui| {
+                    ui.label(RichText::new(scan::brew_path().unwrap_or(t("no instalado"))).monospace().size(13.0).color(text_2()));
                 });
             }
         });
@@ -623,13 +666,13 @@ impl UpdatesApp {
                     ui.vertical(|ui| {
                         ui.spacing_mut().item_spacing.y = 3.0;
                         ui.label(RichText::new("Updateeer").size(18.0).family(display()));
-                        ui.label(RichText::new("Todas tus apps al día, desde una sola cola. Gratis y de código abierto.").size(12.5).color(faint()));
+                        ui.label(RichText::new(t("Todas tus apps al día, desde una sola cola. Gratis y de código abierto.")).size(12.5).color(faint()));
                     });
                 });
             });
-            value_row(ui, "Autor", "Hermes Cortes · admin@hermescortes.com");
-            value_row(ui, "Licencia", "MIT — gratis para usar, copiar y modificar");
-            value_row(ui, "Código fuente", "github.com/hermescortesm/updateeer");
+            value_row(ui, t("Autor"), "Hermes Cortes · admin@hermescortes.com");
+            value_row(ui, t("Licencia"), t("MIT — gratis para usar, copiar y modificar"));
+            value_row(ui, t("Código fuente"), "github.com/hermescortesm/updateeer");
         });
         if install_now {
             self.start_self_update();
@@ -637,6 +680,9 @@ impl UpdatesApp {
         if want_welcome {
             self.access = crate::permissions::app_management();
             self.page = Page::Welcome;
+        }
+        if let Some(lang) = pick_language {
+            self.set_language(lang);
         }
         if let Some(on) = want_login {
             self.set_login(on);
