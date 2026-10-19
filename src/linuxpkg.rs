@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 use crate::friendly;
 use crate::model::{App, Source};
+use crate::sudobridge;
 use crate::scan::{self, SCAN_TIMEOUT, UPGRADE_TIMEOUT};
 use crate::winpkg::{app, safe_name};
 
@@ -435,6 +436,8 @@ fn outdated_raw(kind: &str) -> Result<Vec<App>, String> {
         // `-Qu` only knows the last synced database; `checkupdates` (pacman-contrib) syncs a private
         // copy first. Both exit non-zero with no output when nothing is outdated.
         "pacman" => {
+            // A new look at the system: whatever was upgraded before no longer counts.
+            *SYSTEM_UPGRADED.lock().unwrap_or_else(|e| e.into_inner()) = None;
             refresh_pacman_gui();
             let out = if path("checkupdates").is_some() { exec("checkupdates", &[], UPGRADE_TIMEOUT) } else { exec("pacman", &["-Qu"], SCAN_TIMEOUT) };
             parse_pacman_upgrades(&none_if_silent(out)?)
@@ -555,6 +558,26 @@ fn split_pacman(explicit: &str, foreign: &HashSet<String>, gui: &[(String, Strin
     (native, aur)
 }
 
+/// When `pacman -Syu` last finished OK. Every pacman entry of the queue asks for the same full
+/// upgrade, and repeating it only re-syncs the mirrors, so it runs once until the next scan.
+static SYSTEM_UPGRADED: Mutex<Option<Instant>> = Mutex::new(None);
+const SYSTEM_UPGRADE_FRESH: Duration = Duration::from_secs(15 * 60);
+
+fn upgrade_system() -> Result<String, String> {
+    // Held for the whole upgrade, so the second queue worker waits and then finds it done.
+    let mut last = SYSTEM_UPGRADED.lock().unwrap_or_else(|e| e.into_inner());
+    if is_fresh(*last, SYSTEM_UPGRADE_FRESH) {
+        return Ok(String::new());
+    }
+    let out = root(&["pacman", "-Syu", "--noconfirm"])?;
+    *last = Some(Instant::now());
+    Ok(out)
+}
+
+fn is_fresh(at: Option<Instant>, within: Duration) -> bool {
+    at.is_some_and(|t| t.elapsed() < within)
+}
+
 /// Blocks until the manager finishes; call it from a worker thread.
 pub fn upgrade(kind: &str, name: &str) -> Result<(), String> {
     if !safe_name(name) {
@@ -564,7 +587,7 @@ pub fn upgrade(kind: &str, name: &str) -> Result<(), String> {
         "apt" => root(&["env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "--only-upgrade", "-y", name]),
         // Arch has no partial upgrades and the scan used a fresh database, so sync and upgrade
         // everything; later queue entries then find nothing left to do.
-        "pacman" => root(&["pacman", "-Syu", "--noconfirm"]),
+        "pacman" => upgrade_system(),
         "dnf" => root(&["dnf", "upgrade", "-y", name]),
         "zypper" => root(&["zypper", "--non-interactive", "update", name]),
         "apk" => root(&["apk", "add", "-u", name]),
@@ -573,15 +596,22 @@ pub fn upgrade(kind: &str, name: &str) -> Result<(), String> {
         // the root lock so it never meets a `pacman -Syu` on the database lock.
         "aur" => {
             let helper = aur_helper().ok_or("Falta paru o yay para actualizar paquetes del AUR")?;
-            let mut args = vec!["-S", "--noconfirm", "--needed", "--sudo", "/usr/bin/pkexec"];
-            args.extend(if helper == "paru" { vec!["--skipreview"] } else { vec!["--answerdiff", "None", "--answerclean", "None", "--nodiffmenu", "--noeditmenu"] });
-            args.push(name);
-            let _guard = ROOT.lock().unwrap_or_else(|e| e.into_inner());
-            exec(helper, &args, UPGRADE_TIMEOUT)
+            // The helper builds as the user and calls `sudo pacman ...` several times; the bridge
+            // sends those calls to the shared root shell, so the password is asked once.
+            let bridge = sudobridge::Bridge::start(|argv| root(&argv.iter().map(String::as_str).collect::<Vec<_>>()))?;
+            let mut args: Vec<String> = ["-S", "--noconfirm", "--needed"].map(String::from).into();
+            args.extend(bridge.flags());
+            args.extend(if helper == "paru" { vec!["--skipreview"] } else { vec!["--answerdiff", "None", "--answerclean", "None", "--nodiffmenu", "--noeditmenu"] }.into_iter().map(String::from));
+            args.push(name.to_string());
+            let mut cmd = Command::new(path(helper).ok_or("Falta paru o yay")?);
+            cmd.env("LC_ALL", "C").env(sudobridge::TOKEN_VAR, bridge.token());
+            let result = scan::run(cmd, &args.iter().map(String::as_str).collect::<Vec<_>>(), UPGRADE_TIMEOUT);
+            bridge.stop();
+            result
         }
         "flatpak" => retry_network(|| exec("flatpak", &["update", "-y", "--noninteractive", name], UPGRADE_TIMEOUT)),
-        // snapd asks polkit for the permission by itself.
-        "snap" => exec("snap", &["refresh", name], UPGRADE_TIMEOUT),
+        // Through the root shell, so snapd does not ask polkit for a password of its own.
+        "snap" => root(&["snap", "refresh", name]),
         _ => Err(format!("id no soportado: {kind}:{name}")),
     }
     .map(|_| ())
@@ -924,6 +954,13 @@ mod tests {
     fn silent_failure_means_no_updates() {
         assert_eq!(none_if_silent(Err(String::new())), Ok(String::new()));
         assert_eq!(none_if_silent(Err("error: boom".into())), Err("error: boom".into()));
+    }
+
+    #[test]
+    fn a_recent_system_upgrade_is_not_repeated() {
+        assert!(!is_fresh(None, Duration::from_secs(60)));
+        assert!(is_fresh(Some(Instant::now()), Duration::from_secs(60)));
+        assert!(!is_fresh(Some(Instant::now()), Duration::ZERO));
     }
 
     #[test]
