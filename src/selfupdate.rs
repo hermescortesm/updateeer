@@ -124,14 +124,15 @@ pub fn install(release: &Release) -> Result<(), String> {
     let asset = release.assets.iter().find(|a| a.name.ends_with(&suffix)).ok_or("Esta versión no trae un instalador para tu sistema")?;
     let want = expected_sha(asset, &release.notes).ok_or("La versión no publica una suma SHA-256 para verificar el instalador")?;
     let dir = std::env::temp_dir().join(format!("updateeer-update-{}", std::process::id()));
+    let exe = exe_path()?;
     let file = download(asset, &want, &dir)?;
     // On Windows the installer outlives this process, so its folder is left in place.
     let result = if cfg!(target_os = "macos") {
         replace_bundle(&file, &dir)
     } else if cfg!(windows) {
-        run_msi(&file)
+        run_msi(&file, &exe)
     } else {
-        crate::linuxpkg::install_file(manager, file.to_str().ok_or("Ruta no válida")?).and_then(|_| relaunch())
+        crate::linuxpkg::install_file(manager, file.to_str().ok_or("Ruta no válida")?).and_then(|_| relaunch(&exe))
     };
     if !cfg!(windows) {
         let _ = std::fs::remove_dir_all(&dir);
@@ -175,8 +176,18 @@ fn spawn_detached(cmd: &mut Command) -> Result<(), String> {
     cmd.spawn().map(|_| ()).map_err(|e| e.to_string())
 }
 
-fn relaunch() -> Result<(), String> {
-    spawn_detached(&mut Command::new(std::env::current_exe().map_err(|e| e.to_string())?))
+/// This executable's path. Linux appends " (deleted)" once a package replaced the file, so the
+/// suffix is dropped: the new version sits at the same path.
+fn exe_path() -> Result<PathBuf, String> {
+    std::env::current_exe().map(|e| clean_exe(&e)).map_err(|e| e.to_string())
+}
+
+fn clean_exe(exe: &Path) -> PathBuf {
+    exe.to_str().and_then(|s| s.strip_suffix(" (deleted)")).map_or_else(|| exe.to_path_buf(), PathBuf::from)
+}
+
+fn relaunch(exe: &Path) -> Result<(), String> {
+    spawn_detached(&mut Command::new(exe))
 }
 
 /// macOS: mounts the dmg, swaps the running bundle for the new one and opens it.
@@ -212,10 +223,9 @@ fn swap_from_dmg(dmg: &Path, mount: &Path, bundle: &Path) -> Result<(), String> 
 
 /// Windows: the installer needs this app closed, so a PowerShell helper waits for it, runs the
 /// MSI (Windows asks for permission) and opens the new version.
-fn run_msi(msi: &Path) -> Result<(), String> {
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+fn run_msi(msi: &Path, exe: &Path) -> Result<(), String> {
     let q = |p: &Path| p.display().to_string().replace('\'', "''");
-    let script = format!("Start-Sleep -Seconds 2; Start-Process msiexec -ArgumentList '/i','\"{}\"','/passive','/norestart' -Wait; Start-Process '{}'", q(msi), q(&exe));
+    let script = format!("Start-Sleep -Seconds 2; Start-Process msiexec -ArgumentList '/i','\"{}\"','/passive','/norestart' -Wait; Start-Process '{}'", q(msi), q(exe));
     spawn_detached(Command::new("powershell").args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &script]))
 }
 
@@ -327,5 +337,12 @@ mod tests {
     fn notes_become_plain_text() {
         let notes = "## Updateeer 0.1.85\n\n### Added\n- A banner\n\n### SHA-256\n```\nabc  file\n```\n";
         assert_eq!(summary(notes), "Added:\n• A banner");
+    }
+
+    #[test]
+    fn a_replaced_binary_keeps_its_path() {
+        // What current_exe() returns on Linux after the package manager swapped the file.
+        assert_eq!(clean_exe(Path::new("/usr/bin/updateeer (deleted)")), PathBuf::from("/usr/bin/updateeer"));
+        assert_eq!(clean_exe(Path::new("/usr/bin/updateeer")), PathBuf::from("/usr/bin/updateeer"));
     }
 }
