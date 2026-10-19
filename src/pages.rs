@@ -61,7 +61,9 @@ fn name_cell(ui: &mut Ui, rect: egui::Rect, left: f32, app: &App, icon: Option<&
 
 /// Where an install started from "Discover" stands.
 pub(crate) enum Inst {
-    Running,
+    /// Started at: the progress shown is an estimate that creeps toward 90% (package managers
+    /// report none).
+    Running(std::time::Instant),
     Done,
     Failed(String),
 }
@@ -114,7 +116,7 @@ impl UpdatesApp {
     }
 
     fn start_install(&mut self, id: String) {
-        self.discover.installs.insert(id.clone(), Inst::Running);
+        self.discover.installs.insert(id.clone(), Inst::Running(std::time::Instant::now()));
         let (tx, ctx) = (self.discover.tx.clone(), self.ctx.clone());
         thread::spawn(move || {
             let result = crate::upgrade::install(&id);
@@ -208,8 +210,22 @@ impl UpdatesApp {
                         cell(ui, rect, right - 140.0, right, Layout::right_to_left(Align::Center), |ui| {
                             if installed {
                                 ui.label(RichText::new("Instalada").size(13.0).family(semibold()).color(accent_text()));
-                            } else if matches!(state, Some(Inst::Running)) {
-                                ui.label(RichText::new("Instalando…").size(13.0).color(faint()));
+                            } else if let Some(Inst::Running(since)) = state {
+                                let p = 90.0 * (1.0 - (-since.elapsed().as_secs_f32() / 20.0).exp());
+                                ui.vertical(|ui| {
+                                    ui.set_width(130.0);
+                                    // Content is ~26px tall in a 68px row: push it to the vertical center.
+                                    ui.add_space(21.0);
+                                    ui.spacing_mut().item_spacing.y = 6.0;
+                                    ui.horizontal(|ui| {
+                                        ui.label(RichText::new(if p < 70.0 { "Descargando" } else { "Instalando" }).size(12.0).color(text_2()));
+                                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                            ui.label(RichText::new(format!("{}%", p.round())).monospace().size(12.0).color(accent_text()));
+                                        });
+                                    });
+                                    widgets::progress_bar(ui, p / 100.0, 5.0);
+                                });
+                                ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
                             } else {
                                 let label = if matches!(state, Some(Inst::Failed(_))) { "Reintentar" } else { "Instalar" };
                                 if widgets::button(ui, Some(Icon::Download), label, Kind::Soft, 34.0, true).clicked() {

@@ -996,6 +996,19 @@ mod tests {
         assert!(is_gui("apt:xterm"));
     }
 
+    /// Needs an Arch system with a launcher package: `cargo test live_pacman_gui -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn live_pacman_gui() {
+        for kind in ["pacman", "aur"] {
+            let apps = installed(kind).unwrap();
+            println!("{kind}: {:?}", apps.iter().map(|a| (&a.id, &a.name, &a.vendor)).collect::<Vec<_>>());
+        }
+        println!("gui: {:?}", pacman_gui());
+        let all: Vec<_> = installed("pacman").unwrap().into_iter().chain(installed("aur").unwrap()).collect();
+        assert!(all.iter().any(|a| a.name == "Google Chrome"), "Chrome missing");
+    }
+
     #[test]
     fn zypper_apk_xbps() {
         let z = "Loading repository data...\nS | Repository | Name | Current Version | Available Version | Arch\n--+------------+------+-----------------+-------------------+-------\nv | Main       | curl | 8.0-1.1         | 8.1-1.1           | x86_64\n";
