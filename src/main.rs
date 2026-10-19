@@ -11,6 +11,7 @@ mod linuxpkg;
 mod local;
 mod logos;
 mod mas;
+mod masroot;
 mod model;
 mod native;
 mod notify;

@@ -29,14 +29,23 @@ pub fn installed() -> Result<Vec<App>, String> {
     Ok(parse(&mas(&["list"], SCAN_TIMEOUT)?, false))
 }
 
+/// Set once `mas` has said it needs root: from then on every upgrade goes straight to the helper.
+static NEEDS_ADMIN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Blocks until mas finishes; call it from a worker thread.
 pub fn upgrade(id: &str) -> Result<(), String> {
     if !safe_id(id) {
         return Err(format!("id no soportado: {id}"));
     }
+    if NEEDS_ADMIN.load(std::sync::atomic::Ordering::SeqCst) {
+        return admin_upgrade(id);
+    }
     match mas(&["upgrade", id], UPGRADE_TIMEOUT) {
         // Recent `mas` versions call sudo, which cannot ask for a password here.
-        Err(e) if needs_admin(&e) => admin_upgrade(id),
+        Err(e) if needs_admin(&e) => {
+            NEEDS_ADMIN.store(true, std::sync::atomic::Ordering::SeqCst);
+            admin_upgrade(id)
+        }
         r => r.map(|_| ()),
     }
 }
@@ -45,13 +54,10 @@ fn needs_admin(error: &str) -> bool {
     error.contains("password is required") || error.contains("a terminal is required")
 }
 
-/// Runs the upgrade as root behind the system's own password dialog.
+/// Runs the upgrade as root through the helper that asked for the password once.
 fn admin_upgrade(id: &str) -> Result<(), String> {
     let bin = path().ok_or(crate::i18n::t("mas no está instalado (brew install mas)"))?;
-    let script = format!("do shell script {} with administrator privileges", crate::setup::applescript_string(&format!("{bin} upgrade {id}")));
-    scan::run(Command::new("/usr/bin/osascript"), &["-e", &script], UPGRADE_TIMEOUT).map(|_| ()).map_err(|e| {
-        if e.contains("-128") { crate::i18n::t("Cancelaste la petición de contraseña").to_string() } else { e }
-    })
+    crate::masroot::upgrade(bin, id)
 }
 
 /// Lines look like `497799835  Xcode  (27.0 -> 27.1)` (outdated) or `...  (27.0)` (list).
