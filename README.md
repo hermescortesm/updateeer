@@ -83,7 +83,7 @@ sudo zypper install ./Updateeer-<version>-linux-x86_64.rpm   # openSUSE
 
 Other distributions: [build from source](#build-from-source) and copy `target/release/updateeer` to `~/.local/bin`.
 
-Updateeer updates itself: when a newer version exists, *Settings → Version → Install and restart* downloads the installer for your system, verifies its SHA-256 and installs it (macOS replaces the app, Windows runs the MSI, Linux uses your package manager and asks for your password once). Copies not installed from a package keep a *Download* button. You can also verify any download against the SHA-256 list in each release's notes.
+Updateeer updates itself: when a newer version exists, *Settings → Version → Install and restart* downloads the installer for your system, verifies its SHA-256 and installs it (macOS replaces the app, Windows runs the MSI, Linux uses your package manager and asks for your password once; the packages ship a polkit policy so the dialog names Updateeer and the system remembers the password for a few minutes). Copies not installed from a package keep a *Download* button. You can also verify any download against the SHA-256 list in each release's notes.
 
 ## Build from source
 
