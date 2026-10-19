@@ -290,6 +290,7 @@ impl UpdatesApp {
                                 if present.is_some_and(|p| crate::upgrade::can_uninstall(&p.id)) && widgets::button(ui, None, t("Desinstalar"), Kind::Soft, 34.0, true).clicked() {
                                     ask = Some(app.id.clone());
                                 }
+                                ui.add_space(14.0);
                                 ui.label(RichText::new(t("Instalada")).size(13.0).family(semibold()).color(accent_text()));
                             }
                             _ => {
@@ -776,7 +777,7 @@ fn value_row(ui: &mut Ui, title: &str, value: &str) {
             ui.label(RichText::new(title).size(14.0).family(semibold()).color(text_2()));
         });
         cell(ui, rect, left + 220.0, right, Layout::right_to_left(Align::Center), |ui| {
-            ui.add(egui::Label::new(RichText::new(value).monospace().size(13.0).color(text())).truncate()).on_hover_text(value);
+            ui.add(egui::Label::new(RichText::new(value).monospace().size(13.0).color(text())).truncate().selectable(true)).on_hover_text(value);
         });
     });
 }

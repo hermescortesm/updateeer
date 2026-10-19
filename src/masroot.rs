@@ -15,14 +15,24 @@ use std::time::{Duration, Instant};
 
 use crate::scan::{self, UPGRADE_TIMEOUT};
 
-const LOOP: &str = r#"d="$1"; uid="$2"; gid="$3"; parent="$4"; token="$5"; mas="$6"
+const LOOP: &str = r#"d="$1"; uid="$2"; gid="$3"; parent="$4"; token="$5"; mas="$6"; limit="$7"
 exec 3<>"$d/req"
 echo $$ > "$d/ready"
 while kill -0 "$parent" 2>/dev/null; do
   if read -r -t 2 -u 3 tok resp id; then
     case "$id" in ''|*[!0-9]*) ok=0;; *) ok=1;; esac
     if [ "$tok" = "$token" ] && [ "$ok" = 1 ] && [ "${#id}" -le 12 ] && [ "$(dirname "$resp")" = "$d" ]; then
-      out=$(SUDO_UID="$uid" SUDO_GID="$gid" "$mas" upgrade "$id" 2>&1); code=$?
+      # mas runs in the background so a hung download can be stopped: on cancel, or after `limit` seconds.
+      SUDO_UID="$uid" SUDO_GID="$gid" "$mas" upgrade "$id" >"$resp.out" 2>&1 &
+      pid=$!; n=0; code=
+      while kill -0 "$pid" 2>/dev/null; do
+        if [ -e "$resp.cancel" ] || [ "$n" -ge "$limit" ]; then
+          kill "$pid" 2>/dev/null; sleep 1; kill -9 "$pid" 2>/dev/null; code=124; break
+        fi
+        sleep 1; n=$((n+1))
+      done
+      [ -n "$code" ] || { wait "$pid"; code=$?; }
+      out=$(cat "$resp.out"); rm -f "$resp.out" "$resp.cancel"
     else
       out="not allowed"; code=1
     fi
@@ -81,11 +91,12 @@ fn start(mas_bin: &str, launcher: &dyn Fn(&str) -> Result<(), String>) -> Result
     let (uid, gid) = (id_of("-u")?, id_of("-g")?);
     let q = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
     let command = format!(
-        "/bin/bash -c {} bash {} {uid} {gid} {} {token} {} >/dev/null 2>&1 &",
+        "/bin/bash -c {} bash {} {uid} {gid} {} {token} {} {} >/dev/null 2>&1 &",
         q(LOOP),
         q(&dir.to_string_lossy()),
         std::process::id(),
-        q(mas_bin)
+        q(mas_bin),
+        UPGRADE_TIMEOUT.as_secs()
     );
     launcher(&command)?;
     let ready = dir.join("ready");
@@ -119,12 +130,18 @@ fn ask(helper: &Helper, id: &str) -> Ask {
             let _ = fs::remove_file(&resp);
             let (code, out) = text.split_once('\n').unwrap_or(("1", &text));
             let out = out.trim();
-            return Ask::Done(if code.trim() == "0" { Ok(()) } else { Err(scan::tail(out)) });
+            return Ask::Done(match code.trim() {
+                "0" => Ok(()),
+                "124" => Err(crate::i18n::t("El comando tardó demasiado y se canceló").to_string()),
+                _ => Err(scan::tail(out)),
+            });
         }
         if scan::CANCEL_GEN.load(Ordering::SeqCst) != generation {
+            let _ = fs::write(format!("{}.cancel", resp.display()), "");
             return Ask::Done(Err("Cancelado".into()));
         }
-        if Instant::now() >= deadline {
+        if Instant::now() >= deadline + Duration::from_secs(10) {
+            let _ = fs::write(format!("{}.cancel", resp.display()), "");
             return Ask::Done(Err(crate::i18n::t("El comando tardó demasiado y se canceló").to_string()));
         }
         std::thread::sleep(Duration::from_millis(100));
