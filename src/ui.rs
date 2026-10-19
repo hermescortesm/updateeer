@@ -158,6 +158,7 @@ pub struct UpdatesApp {
     mas_install: Option<Receiver<Result<(), String>>>,
     pub(crate) setup_error: Option<String>,
     was_focused: bool,
+    last_logic: Instant,
     /// Frames left before hiding the window (started with `--background`).
     hide_in: Option<u8>,
     pub(crate) login: bool,
@@ -222,6 +223,7 @@ impl UpdatesApp {
             mas_install: None,
             setup_error: None,
             was_focused: true,
+            last_logic: Instant::now(),
             hide_in: start_hidden.then_some(3),
             login: autostart::enabled(),
             login_error: None,
@@ -457,30 +459,16 @@ impl UpdatesApp {
 }
 
 impl eframe::App for UpdatesApp {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        let light = match self.settings.theme {
-            ThemeMode::Light => true,
-            ThemeMode::Dark => false,
-            ThemeMode::System => self.ctx.system_theme() == Some(egui::Theme::Light),
-        };
-        if light != theme::is_light() {
-            theme::apply(&self.ctx, light);
-        }
-        self.menu_bar();
-        // The user may have installed a tool in Terminal: look again when the window is focused.
-        let focused = ui.input(|i| i.focused);
-        if focused && !self.was_focused {
-            self.tools = detect_tools();
-            self.access = crate::permissions::app_management();
-        }
-        self.was_focused = focused;
+    /// Runs on every wake-up, even while the window is covered or hidden (`ui` is skipped then):
+    /// background results are collected and the queue keeps moving.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_mas_install();
         self.poll_notify();
         self.poll_scan();
         self.poll_release();
         self.poll_self_update();
         if self.self_update_rx.is_some() {
-            self.ctx.request_repaint_after(std::time::Duration::from_millis(33));
+            ctx.request_repaint_after(std::time::Duration::from_millis(33));
         }
         self.poll_icons();
         while let Ok((id, result)) = self.done_rx.try_recv() {
@@ -511,10 +499,11 @@ impl eframe::App for UpdatesApp {
             if self.settings.auto && self.last_scan.elapsed() >= Duration::from_secs(self.settings.hours as u64 * 3600) {
                 self.start_scan();
             }
-            ui.request_repaint_after(Duration::from_secs(60));
+            ctx.request_repaint_after(Duration::from_secs(60));
         }
         if self.queue.is_busy() {
-            self.queue.creep(ui.input(|i| i.stable_dt));
+            let dt = self.last_logic.elapsed().as_secs_f32();
+            self.queue.creep(dt);
             for id in self.queue.start_ready() {
                 let (tx, ctx) = (self.done_tx.clone(), self.ctx.clone());
                 thread::spawn(move || {
@@ -523,8 +512,28 @@ impl eframe::App for UpdatesApp {
                     ctx.request_repaint();
                 });
             }
-            ui.request_repaint_after(Duration::from_millis(100));
+            ctx.request_repaint_after(Duration::from_millis(100));
         }
+        self.last_logic = Instant::now();
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let light = match self.settings.theme {
+            ThemeMode::Light => true,
+            ThemeMode::Dark => false,
+            ThemeMode::System => self.ctx.system_theme() == Some(egui::Theme::Light),
+        };
+        if light != theme::is_light() {
+            theme::apply(&self.ctx, light);
+        }
+        self.menu_bar();
+        // The user may have installed a tool in Terminal: look again when the window is focused.
+        let focused = ui.input(|i| i.focused);
+        if focused && !self.was_focused {
+            self.tools = detect_tools();
+            self.access = crate::permissions::app_management();
+        }
+        self.was_focused = focused;
         egui::Panel::left("nav")
             .exact_size(236.0)
             .resizable(false)
