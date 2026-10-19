@@ -48,7 +48,21 @@ fn single_instance() -> Option<std::fs::File> {
     }
 }
 
+/// `updateeer --root-shell`: what pkexec runs under the polkit policy. It is only a shell, so the
+/// app can send administrator commands to it, but the policy names this exact program.
+#[cfg(unix)]
+fn root_shell() -> ! {
+    use std::os::unix::process::CommandExt;
+    let err = std::process::Command::new("/bin/sh").exec();
+    eprintln!("updateeer: cannot start /bin/sh: {err}");
+    std::process::exit(1)
+}
+
 fn main() -> eframe::Result {
+    #[cfg(unix)]
+    if std::env::args().nth(1).as_deref() == Some("--root-shell") {
+        root_shell();
+    }
     let _lock = single_instance();
     // Started by "open at login": stay in the menu bar until the user opens the window.
     let background = std::env::args().any(|a| a == "--background");

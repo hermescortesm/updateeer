@@ -12,6 +12,7 @@ trap 'rm -rf "$root"' EXIT
 
 install -Dm755 target/release/updateeer "$root/usr/bin/updateeer"
 install -Dm644 packaging/linux/updateeer.desktop "$root/usr/share/applications/updateeer.desktop"
+install -Dm644 packaging/linux/mx.hermescortes.updateeer.policy "$root/usr/share/polkit-1/actions/mx.hermescortes.updateeer.policy"
 install -Dm644 LICENSE "$root/usr/share/doc/updateeer/copyright"
 install -Dm644 assets/icon.png "$root/usr/share/icons/hicolor/256x256/apps/updateeer.png"
 mkdir -p "$root/DEBIAN"

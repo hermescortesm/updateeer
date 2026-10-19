@@ -29,12 +29,14 @@ them from one queue.
 %install
 install -Dm755 $repo/target/release/updateeer %{buildroot}/usr/bin/updateeer
 install -Dm644 $repo/packaging/linux/updateeer.desktop %{buildroot}/usr/share/applications/updateeer.desktop
+install -Dm644 $repo/packaging/linux/mx.hermescortes.updateeer.policy %{buildroot}/usr/share/polkit-1/actions/mx.hermescortes.updateeer.policy
 install -Dm644 $repo/LICENSE %{buildroot}/usr/share/licenses/updateeer/LICENSE
 install -Dm644 $repo/assets/icon.png %{buildroot}/usr/share/icons/hicolor/256x256/apps/updateeer.png
 
 %files
 /usr/bin/updateeer
 /usr/share/applications/updateeer.desktop
+/usr/share/polkit-1/actions/mx.hermescortes.updateeer.policy
 /usr/share/licenses/updateeer/LICENSE
 /usr/share/icons/hicolor/256x256/apps/updateeer.png
 SPEC

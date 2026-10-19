@@ -322,9 +322,21 @@ fn quote(arg: &str) -> String {
     format!("'{}'", arg.replace('\'', "'\\''"))
 }
 
+/// The polkit policy the packages install: it names Updateeer in the dialog and lets polkit
+/// remember the password for a few minutes.
+const POLICY: &str = "/usr/share/polkit-1/actions/mx.hermescortes.updateeer.policy";
+const INSTALLED_EXE: &str = "/usr/bin/updateeer";
+
+/// What pkexec runs: Updateeer's own `--root-shell` when the policy is installed and this is the
+/// installed binary (so both are the same version), a plain shell otherwise.
+fn root_shell_args(policy: bool, installed_exe: bool) -> &'static [&'static str] {
+    if policy && installed_exe { &[INSTALLED_EXE, "--root-shell"] } else { &["/bin/sh"] }
+}
+
 fn start_root() -> Result<RootShell, String> {
     let bin = find("pkexec").ok_or("Falta pkexec (polkit) para pedir permisos de administrador")?;
-    spawn_shell(Command::new(bin).arg("/bin/sh"))
+    let installed_exe = crate::selfupdate::exe_path().is_ok_and(|p| p == Path::new(INSTALLED_EXE));
+    spawn_shell(Command::new(bin).args(root_shell_args(Path::new(POLICY).is_file(), installed_exe)))
 }
 
 fn spawn_shell(cmd: &mut Command) -> Result<RootShell, String> {
@@ -1062,6 +1074,16 @@ mod tests {
         println!("gui: {:?}", pacman_gui());
         let all: Vec<_> = installed("pacman").unwrap().into_iter().chain(installed("aur").unwrap()).collect();
         assert!(all.iter().any(|a| a.name == "Google Chrome"), "Chrome missing");
+    }
+
+    #[test]
+    fn the_root_shell_uses_the_policy_only_for_the_installed_binary() {
+        assert_eq!(root_shell_args(true, true), ["/usr/bin/updateeer", "--root-shell"]);
+        assert_eq!(root_shell_args(true, false), ["/bin/sh"]);
+        assert_eq!(root_shell_args(false, true), ["/bin/sh"]);
+        // The policy must name exactly what pkexec is asked to run.
+        let policy = include_str!("../packaging/linux/mx.hermescortes.updateeer.policy");
+        assert!(policy.contains(&format!(">{INSTALLED_EXE}<")) && policy.contains(">--root-shell<") && policy.contains("auth_admin_keep"));
     }
 
     #[test]

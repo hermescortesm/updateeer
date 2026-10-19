@@ -222,7 +222,7 @@ fn spawn_detached(cmd: &mut Command) -> Result<(), String> {
 
 /// This executable's path. Linux appends " (deleted)" once a package replaced the file, so the
 /// suffix is dropped: the new version sits at the same path.
-fn exe_path() -> Result<PathBuf, String> {
+pub(crate) fn exe_path() -> Result<PathBuf, String> {
     std::env::current_exe().map(|e| clean_exe(&e)).map_err(|e| e.to_string())
 }
 

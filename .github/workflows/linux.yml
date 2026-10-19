@@ -28,6 +28,7 @@ jobs:
       - name: Build the .deb
         run: |
           tools/package-deb.sh
+          dpkg-deb -c dist/*.deb | grep -q usr/share/polkit-1/actions/mx.hermescortes.updateeer.policy
           sha256sum dist/*.deb
 
       - uses: actions/upload-artifact@v4
@@ -63,6 +64,7 @@ jobs:
           chown -R builder /build
           su builder -c "cd /build && UPDATEEER_VERSION=$version makepkg --noconfirm --nodeps -f"
           cp "/build/updateeer-$version-1-$(uname -m).pkg.tar.zst" "dist/Updateeer-$version-linux-$(uname -m).pkg.tar.zst"
+          bsdtar -tf dist/*.pkg.tar.zst | grep -q usr/share/polkit-1/actions/mx.hermescortes.updateeer.policy
           sha256sum dist/*
 
       - uses: actions/upload-artifact@v4
@@ -92,6 +94,7 @@ jobs:
         run: |
           cargo build --release --locked
           tools/package-rpm.sh
+          rpm -qlp dist/*.rpm | grep -q usr/share/polkit-1/actions/mx.hermescortes.updateeer.policy
           sha256sum dist/*
 
       - uses: actions/upload-artifact@v4
