@@ -24,6 +24,7 @@ package() {
   cd "$pkgname-$pkgver"
   install -Dm755 target/release/updateeer "$pkgdir/usr/bin/updateeer"
   install -Dm644 packaging/linux/updateeer.desktop "$pkgdir/usr/share/applications/updateeer.desktop"
+  install -Dm644 packaging/linux/mx.hermescortes.updateeer.policy "$pkgdir/usr/share/polkit-1/actions/mx.hermescortes.updateeer.policy"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
   install -Dm644 assets/icon.png "$pkgdir/usr/share/icons/hicolor/256x256/apps/updateeer.png"
 }
