@@ -5,7 +5,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::Mutex;
 use std::thread;
@@ -253,9 +253,32 @@ fn run_in(sh: &mut RootShell, args: &[&str]) -> Ran {
     }
 }
 
+/// `apt list --upgradable` only reads the local cache, so a cache older than this is refreshed first.
+const APT_CACHE_MAX_AGE: Duration = Duration::from_secs(6 * 3600);
+
+/// Age of the apt package lists, or `None` when unknown.
+fn apt_cache_age() -> Option<Duration> {
+    ["/var/lib/apt/periodic/update-success-stamp", "/var/lib/apt/lists"]
+        .iter()
+        .filter_map(|p| fs::metadata(p).and_then(|m| m.modified()).ok())
+        .max()
+        .map(|t| t.elapsed().unwrap_or_default())
+}
+
+/// Runs `apt-get update` as root when the cache is stale. Asked once per session: a refused
+/// password or a failure leaves the old cache in use instead of nagging on every scan.
+fn refresh_apt() {
+    static TRIED: AtomicBool = AtomicBool::new(false);
+    if apt_cache_age().is_none_or(|a| a < APT_CACHE_MAX_AGE) || TRIED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let _ = root(&["apt-get", "update", "-q"]);
+}
+
 pub fn outdated(kind: &str) -> Result<Vec<App>, String> {
     Ok(match kind {
         "apt" => {
+            refresh_apt();
             set_gui("apt", apt_gui().iter());
             parse_apt_upgradable(&exec("apt", &["list", "--upgradable"], SCAN_TIMEOUT)?)
         }
