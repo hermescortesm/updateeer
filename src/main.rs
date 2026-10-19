@@ -21,6 +21,7 @@ mod scan;
 mod selfupdate;
 mod settings;
 mod setup;
+mod sudobridge;
 mod theme;
 mod tray;
 mod ui;
