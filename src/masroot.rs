@@ -199,6 +199,7 @@ mod tests {
     /// Same loop, started as the current user (no dialog) with a stand-in for `mas`.
     #[test]
     fn requests_run_mas_with_sudo_uid_and_bad_ones_do_not() {
+        let _turn = scan::CANCEL_TEST.lock().unwrap_or_else(|e| e.into_inner());
         let fake = std::env::temp_dir().join(format!("fake-mas-{}", std::process::id()));
         fs::write(&fake, "#!/bin/sh\nif [ \"$2\" = 999 ]; then echo 'boom' >&2; exit 3; fi\necho \"upgraded $2 as $SUDO_UID:$SUDO_GID\"\n").unwrap();
         fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
