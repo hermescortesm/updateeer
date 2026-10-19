@@ -485,6 +485,9 @@ impl eframe::App for UpdatesApp {
         self.poll_icons();
         while let Ok((id, result)) = self.done_rx.try_recv() {
             let error = result.as_ref().err().cloned();
+            if error.as_deref() == Some(t("Cancelaste la petición de contraseña")) {
+                self.queue.no_retry(&id);
+            }
             self.queue.finish(&id, result);
             // A failed first attempt is retried silently: only final outcomes make history.
             let app = self.apps.iter().find(|a| a.id == id);
