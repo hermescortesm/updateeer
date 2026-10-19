@@ -1,6 +1,6 @@
 [package]
 name = "updateeer"
-version = "0.1.94"
+version = "0.1.95"
 edition = "2024"
 description = "Keeps your installed apps up to date from one queue"
 authors = ["Hermes Cortes <admin@hermescortes.com>"]

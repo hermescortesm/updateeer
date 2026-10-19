@@ -282,19 +282,25 @@ fn run_msi(msi: &Path, exe: &Path) -> Result<(), String> {
 /// The release notes as plain text for the in-app "what's new": headings and bullets tidied,
 /// the checksum list left out.
 pub fn summary(notes: &str) -> String {
-    let mut out = Vec::new();
+    let mut out: Vec<String> = Vec::new();
     for line in notes.lines().map(str::trim) {
-        if line.starts_with("### SHA-256") {
+        let heading = line.starts_with('#').then(|| line.trim_start_matches('#').trim());
+        if heading.is_some_and(|h| h.starts_with("SHA-256")) {
             break;
         }
-        if line.is_empty() || line.starts_with("## ") || line.starts_with("```") {
+        if line.is_empty() || line.starts_with("```") {
             continue;
         }
-        out.push(match (line.strip_prefix("### "), line.strip_prefix("- ")) {
-            (Some(h), _) => format!("{h}:"),
-            (_, Some(b)) => format!("• {b}"),
-            _ => line.to_string(),
-        });
+        match (heading, line.strip_prefix("- ")) {
+            (Some(h), _) => {
+                if !out.is_empty() {
+                    out.push(String::new());
+                }
+                out.push(format!("{h}:"));
+            }
+            (_, Some(b)) => out.push(format!("– {b}")),
+            _ => out.push(line.to_string()),
+        }
     }
     out.join("\n")
 }
@@ -385,8 +391,9 @@ mod tests {
 
     #[test]
     fn notes_become_plain_text() {
-        let notes = "## Updateeer 0.1.85\n\n### Added\n- A banner\n\n### SHA-256\n```\nabc  file\n```\n";
-        assert_eq!(summary(notes), "Added:\n• A banner");
+        let notes = "## New\n- A banner\n\n## Notes\n- Careful\n\n## SHA-256\n- `f.deb`: `abc`\n- `f.msi`: `def`\n";
+        assert_eq!(summary(notes), "New:\n– A banner\n\nNotes:\n– Careful");
+        assert_eq!(summary("### Added\n- X\n\n### SHA-256\n```\nabc  file\n```\n"), "Added:\n– X");
     }
 
     #[test]
