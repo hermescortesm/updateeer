@@ -53,7 +53,7 @@ pub fn display() -> FontFamily {
 }
 
 /// Static, Latin-subset builds of the design's fonts (egui cannot use variable fonts).
-fn install_fonts(ctx: &egui::Context) {
+pub fn install_fonts(ctx: &egui::Context, lang: crate::i18n::Lang) {
     let mut fonts = FontDefinitions::default();
     let embedded: [(&str, &[u8]); 4] = [
         ("geist", include_bytes!("../assets/fonts/Geist-Regular.ttf")),
@@ -71,13 +71,45 @@ fn install_fonts(ctx: &egui::Context) {
     // tens of MB, so they load off the main thread and are added once ready.
     let ctx = ctx.clone();
     std::thread::spawn(move || {
-        let paths = ["/System/Library/Fonts/Hiragino Sans GB.ttc", "/System/Library/Fonts/Helvetica.ttc"];
-        let Some(bytes) = paths.into_iter().find_map(|p| std::fs::read(p).ok()) else { return };
+        let Some(bytes) = fallback_font_paths(lang).into_iter().find_map(|p| std::fs::read(p).ok()) else { return };
         fonts.font_data.insert("os-fallback".into(), Arc::new(FontData::from_owned(bytes)));
         set_families(&mut fonts, true);
         ctx.set_fonts(fonts);
         ctx.request_repaint();
     });
+}
+
+/// OS fonts that cover Chinese and Japanese, best match for `lang` first. macOS always loads one
+/// (accents in app names); Windows and Linux only when the interface needs CJK.
+fn fallback_font_paths(lang: crate::i18n::Lang) -> Vec<&'static str> {
+    use crate::i18n::Lang;
+    let cjk = matches!(lang, Lang::Ja | Lang::Zh);
+    let mut paths = Vec::new();
+    if cfg!(target_os = "macos") {
+        if lang == Lang::Ja {
+            paths.push("/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc");
+        }
+        if lang == Lang::Zh {
+            paths.push("/System/Library/Fonts/PingFang.ttc");
+        }
+        paths.extend(["/System/Library/Fonts/Hiragino Sans GB.ttc", "/System/Library/Fonts/Helvetica.ttc"]);
+    } else if cjk && cfg!(windows) {
+        paths.extend(if lang == Lang::Ja { ["C:\\Windows\\Fonts\\YuGothR.ttc", "C:\\Windows\\Fonts\\meiryo.ttc", "C:\\Windows\\Fonts\\msyh.ttc"] } else { ["C:\\Windows\\Fonts\\msyh.ttc", "C:\\Windows\\Fonts\\simsun.ttc", "C:\\Windows\\Fonts\\YuGothR.ttc"] });
+    } else if cjk {
+        paths.extend([
+            "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/OTF/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/adobe-source-han-sans/SourceHanSans-Regular.ttc",
+            "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+            "/usr/share/fonts/wenquanyi/wqy-microhei/wqy-microhei.ttc",
+            "/usr/share/fonts/TTF/wqy-microhei.ttc",
+        ]);
+    }
+    paths
 }
 
 fn set_families(fonts: &mut FontDefinitions, fallback: bool) {
@@ -95,8 +127,8 @@ fn set_families(fonts: &mut FontDefinitions, fallback: bool) {
 }
 
 /// Loads fonts and starts in the dark palette; the app switches it from the setting.
-pub fn install(ctx: &egui::Context) {
-    install_fonts(ctx);
+pub fn install(ctx: &egui::Context, lang: crate::i18n::Lang) {
+    install_fonts(ctx, lang);
     apply(ctx, false);
 }
 

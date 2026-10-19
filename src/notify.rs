@@ -109,8 +109,8 @@ mod imp {
                 let d: Retained<Delegate> = unsafe { msg_send![super(Delegate::alloc(mtm).set_ivars(())), init] };
                 let center = UNUserNotificationCenter::currentNotificationCenter();
                 center.setDelegate(Some(ProtocolObject::from_ref(&*d)));
-                let now = UNNotificationAction::actionWithIdentifier_title_options(&NSString::from_str(ACTION_NOW), &NSString::from_str("Actualizar ahora"), UNNotificationActionOptions::Foreground);
-                let later = UNNotificationAction::actionWithIdentifier_title_options(&NSString::from_str(ACTION_LATER), &NSString::from_str("Más tarde"), UNNotificationActionOptions::empty());
+                let now = UNNotificationAction::actionWithIdentifier_title_options(&NSString::from_str(ACTION_NOW), &NSString::from_str(crate::i18n::t("Actualizar ahora")), UNNotificationActionOptions::Foreground);
+                let later = UNNotificationAction::actionWithIdentifier_title_options(&NSString::from_str(ACTION_LATER), &NSString::from_str(crate::i18n::t("Más tarde")), UNNotificationActionOptions::empty());
                 let category = UNNotificationCategory::categoryWithIdentifier_actions_intentIdentifiers_options(
                     &NSString::from_str(CATEGORY),
                     &NSArray::from_retained_slice(&[now, later]),
@@ -180,8 +180,9 @@ mod imp {
             let text = setup::applescript_string(&format!("{title}\n{body}"));
             let icon = icon.map(|p| format!(" with icon POSIX file {}", setup::applescript_string(&p.to_string_lossy()))).unwrap_or_default();
             let plural = ids.contains(',');
-            let yes = if plural { "Actualizar todas" } else { "Actualizar ahora" };
-            let script = format!("display dialog {text} with title \"Updateeer\" buttons {{\"Más tarde\", \"{yes}\"}} default button \"{yes}\"{icon} giving up after 600");
+            let later = crate::i18n::t("Más tarde");
+            let yes = if plural { crate::i18n::t("Actualizar todas") } else { crate::i18n::t("Actualizar ahora") };
+            let script = format!("display dialog {text} with title \"Updateeer\" buttons {{\"{later}\", \"{yes}\"}} default button \"{yes}\"{icon} giving up after 600");
             let out = Command::new("/usr/bin/osascript").args(["-e", &script]).stdin(Stdio::null()).stderr(Stdio::null()).output();
             let reply = match out {
                 Ok(o) if String::from_utf8_lossy(&o.stdout).contains(&format!("button returned:{yes}")) => Reply::UpdateNow(split_ids(&ids)),
@@ -222,7 +223,7 @@ mod imp {
             }
             let (title, body) = super::message(apps);
             let ids: Vec<String> = apps.iter().map(|a| a.id.clone()).collect();
-            let yes = if apps.len() > 1 { "Actualizar todas" } else { "Actualizar ahora" };
+            let yes = if apps.len() > 1 { crate::i18n::t("Actualizar todas") } else { crate::i18n::t("Actualizar ahora") };
             let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
             std::thread::spawn(move || {
                 let reply = if confirm(&title, &body, yes) { Reply::UpdateNow(ids) } else { Reply::Later(ids) };
@@ -238,7 +239,7 @@ mod imp {
         let quote = |s: &str| format!("'{}'", s.replace('\'', "''"));
         let script = format!(
             "Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show({}, 'Updateeer', 'YesNo', 'Question')",
-            quote(&format!("{title}\n\n{body}\n\n¿Actualizar ahora?"))
+            quote(&format!("{title}\n\n{body}\n\n{}", crate::i18n::t("¿Actualizar ahora?")))
         );
         let mut cmd = Command::new("powershell");
         std::os::windows::process::CommandExt::creation_flags(&mut cmd, 0x0800_0000);
@@ -251,8 +252,8 @@ mod imp {
         let text = format!("{title}\n\n{body}");
         let run = |tool: &str, args: &[&str]| Command::new(tool).args(args).stdin(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success());
         match tool().as_deref() {
-            Some("zenity") => run("zenity", &["--question", "--no-markup", "--title=Updateeer", "--icon-name=updateeer", &format!("--text={text}"), &format!("--ok-label={yes}"), "--cancel-label=Más tarde", "--timeout=600"]),
-            Some("kdialog") => run("kdialog", &["--title", "Updateeer", "--icon", "updateeer", "--yes-label", yes, "--no-label", "Más tarde", "--yesno", &text]),
+            Some("zenity") => run("zenity", &["--question", "--no-markup", "--title=Updateeer", "--icon-name=updateeer", &format!("--text={text}"), &format!("--ok-label={yes}"), &format!("--cancel-label={}", crate::i18n::t("Más tarde")), "--timeout=600"]),
+            Some("kdialog") => run("kdialog", &["--title", "Updateeer", "--icon", "updateeer", "--yes-label", yes, "--no-label", crate::i18n::t("Más tarde"), "--yesno", &text]),
             _ => false,
         }
     }
@@ -269,15 +270,15 @@ pub use imp::Notifier;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn message(apps: &[crate::model::App]) -> (String, String) {
     match apps {
-        [app] => (format!("{} tiene una actualización", app.name), format!("Está abierta ahora. Versión {} → {}.", app.from, app.to)),
+        [app] => (crate::i18n::tf1("{0} tiene una actualización", &app.name.clone()), crate::i18n::tf("Está abierta ahora. Versión {0} → {1}.", &[app.from.clone(), app.to.clone()])),
         _ => {
             let names: Vec<&str> = apps.iter().take(5).map(|a| a.name.as_str()).collect();
             let list = match (names.split_last(), apps.len() > 5) {
-                (Some((last, rest)), false) if !rest.is_empty() => format!("{} y {last}", rest.join(", ")),
-                (_, true) => format!("{} y {} más", names.join(", "), apps.len() - 5),
+                (Some((last, rest)), false) if !rest.is_empty() => crate::i18n::tf("{0} y {1}", &[rest.join(", "), last.to_string()]),
+                (_, true) => crate::i18n::tf("{0} y {1} más", &[names.join(", "), (apps.len() - 5).to_string()]),
                 _ => names.join(", "),
             };
-            (format!("{} apps abiertas tienen actualizaciones", apps.len()), format!("{list}: están abiertas ahora."))
+            (crate::i18n::tf1("{0} apps abiertas tienen actualizaciones", &apps.len().to_string()), crate::i18n::tf1("{0}: están abiertas ahora.", &list.to_string()))
         }
     }
 }

@@ -1,5 +1,6 @@
 //! Curated apps for the Discover page, with the id each package manager knows them by:
 //! Homebrew cask (macOS), winget id (Windows), Flathub id (Linux). An empty id means "not offered there".
+use crate::i18n::t;
 use crate::model::{App, Source};
 use crate::scan;
 
@@ -20,14 +21,14 @@ impl Cat {
 
     pub fn label(self) -> &'static str {
         match self {
-            Cat::All => "Todas",
-            Cat::Browsers => "Navegadores",
-            Cat::Dev => "Desarrollo",
-            Cat::Utilities => "Utilidades",
-            Cat::Chat => "Comunicación",
-            Cat::Media => "Multimedia",
-            Cat::Work => "Productividad",
-            Cat::Games => "Juegos",
+            Cat::All => t("Todas"),
+            Cat::Browsers => t("Navegadores"),
+            Cat::Dev => t("Desarrollo"),
+            Cat::Utilities => t("Utilidades"),
+            Cat::Chat => t("Comunicación"),
+            Cat::Media => t("Multimedia"),
+            Cat::Work => t("Productividad"),
+            Cat::Games => t("Juegos"),
         }
     }
 }

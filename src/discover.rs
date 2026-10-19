@@ -1,4 +1,5 @@
 //! Free-text search for apps to install, through the package manager of this OS.
+use crate::i18n::t;
 use std::path::Path;
 
 use crate::model::{App, Source};
@@ -14,13 +15,13 @@ pub fn safe_query(q: &str) -> bool {
 pub fn search(q: &str) -> Result<Vec<App>, String> {
     let q = q.trim();
     if !safe_query(q) {
-        return Err("Escribe al menos 2 letras".into());
+        return Err(t("Escribe al menos 2 letras").into());
     }
     if cfg!(target_os = "macos") {
         brew_search(q)
     } else if cfg!(windows) {
         let args = ["search", q, "--accept-source-agreements", "--disable-interactivity"];
-        let out = std::process::Command::new(winpkg::winget_path().ok_or("winget no está instalado")?);
+        let out = std::process::Command::new(winpkg::winget_path().ok_or(t("winget no está instalado"))?);
         Ok(winpkg::parse_winget(&scan::run(out, &args, SCAN_TIMEOUT)?, false).into_iter().take(25).map(|mut a| {
             a.from.clear();
             a
@@ -48,7 +49,7 @@ pub fn parse_brew(kind: &str, out: &str) -> Vec<App> {
             id: format!("{kind}:{t}"),
             hue: scan::hue(t),
             name: scan::clean(t),
-            vendor: if kind == "cask" { "Homebrew · app".into() } else { "Homebrew · herramienta".into() },
+            vendor: if kind == "cask" { crate::i18n::t("Homebrew · app").into() } else { crate::i18n::t("Homebrew · herramienta").into() },
             from: String::new(),
             to: String::new(),
             source: Source::Homebrew,
