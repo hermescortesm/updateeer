@@ -17,6 +17,10 @@ const BREW_PATHS: [&str; 2] = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"];
 /// Bumped by `cancel_running`; a process started under an older value is killed.
 pub(crate) static CANCEL_GEN: AtomicU64 = AtomicU64::new(0);
 
+/// Tests that cancel, or that wait on commands which a cancel would stop, take turns.
+#[cfg(all(test, unix))]
+pub(crate) static CANCEL_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Kills every package manager process that is running right now.
 pub fn cancel_running() {
     CANCEL_GEN.fetch_add(1, Ordering::SeqCst);
@@ -364,6 +368,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn cancel_kills_a_running_command() {
+        let _turn = CANCEL_TEST.lock().unwrap_or_else(|e| e.into_inner());
         let worker = thread::spawn(|| run(Command::new("/bin/sleep"), &["30"], Duration::from_secs(60)));
         thread::sleep(Duration::from_millis(400));
         let started = Instant::now();

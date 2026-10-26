@@ -169,6 +169,8 @@ pub fn apply(ctx: &egui::Context, light: bool) {
     v.widgets.hovered.weak_bg_fill = raised_hover();
     v.widgets.hovered.bg_fill = raised_hover();
     ctx.set_visuals(v);
+    // Titles, versions and credits are information, not something to drag-select.
+    ctx.global_style_mut(|s| s.interaction.selectable_labels = false);
 }
 
 /// Placeholder icon tile color: approximates the design's oklch(0.52 0.13 hue).

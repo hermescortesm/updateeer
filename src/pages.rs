@@ -290,6 +290,7 @@ impl UpdatesApp {
                                 if present.is_some_and(|p| crate::upgrade::can_uninstall(&p.id)) && widgets::button(ui, None, t("Desinstalar"), Kind::Soft, 34.0, true).clicked() {
                                     ask = Some(app.id.clone());
                                 }
+                                ui.add_space(14.0);
                                 ui.label(RichText::new(t("Instalada")).size(13.0).family(semibold()).color(accent_text()));
                             }
                             _ => {
@@ -455,12 +456,6 @@ impl UpdatesApp {
                 Status::Failed => t("Falló").into(),
             }
         };
-        let command = match kind {
-            "cask" => format!("brew upgrade --cask {token}"),
-            "formula" => format!("brew upgrade --formula {token}"),
-            "mas" => format!("mas upgrade {token}"),
-            _ => String::new(),
-        };
         let mut rows: Vec<(&str, String)> = vec![
             (t("Origen"), format!("{} · {kind_label}", app.source.label())),
             (t("Estado"), state),
@@ -475,9 +470,6 @@ impl UpdatesApp {
             rows.push((t("Tamaño de descarga"), crate::model::format_size(app.size_mb)));
         }
         rows.push((t("Paquete"), token.to_string()));
-        if is_update && !command.is_empty() {
-            rows.push((t("Comando"), command));
-        }
         if let Some(e) = self.queue.error(&app.id) {
             rows.push((t("Último error"), e.to_string()));
         }
