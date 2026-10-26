@@ -16,7 +16,12 @@ pub enum Status {
     Failed,
 }
 
-/// Update queue: tracks state and hands out work, up to `concurrency` at once.
+/// How many Flatpak updates may run together.
+const FLATPAK_PARALLEL: usize = 3;
+
+/// Update queue: tracks state and hands out work, up to `concurrency` Homebrew updates at once.
+/// Every other manager is limited to what it can really do in parallel: Flatpak a few, the rest
+/// (apt, pacman, dnf, App Store, winget...) one at a time because they take a system-wide lock.
 /// The caller runs the updates and reports back with `finish`.
 pub struct Queue {
     status: HashMap<String, Status>,
@@ -26,6 +31,8 @@ pub struct Queue {
     /// Running when cancelled: their process is being killed and its result must not count.
     cancelled: HashSet<String>,
     concurrency: usize,
+    /// Download size in MB: the smallest run first, so most apps finish early.
+    sizes: HashMap<String, u32>,
 }
 
 impl Queue {
@@ -37,6 +44,20 @@ impl Queue {
             errors: HashMap::new(),
             cancelled: HashSet::new(),
             concurrency,
+            sizes: HashMap::new(),
+        }
+    }
+
+    pub fn set_sizes(&mut self, sizes: impl IntoIterator<Item = (String, u32)>) {
+        self.sizes = sizes.into_iter().collect();
+    }
+
+    /// Which lock the app competes for, and how many of that kind may run together.
+    fn lane<'a>(&self, id: &'a str) -> (&'a str, usize) {
+        match id.split_once(':').map(|(kind, _)| kind) {
+            Some("cask" | "formula") | None => ("brew", self.concurrency),
+            Some("flatpak") => ("flatpak", FLATPAK_PARALLEL),
+            Some(other) => (other, 1),
         }
     }
 
@@ -103,20 +124,27 @@ impl Queue {
 
     /// Moves queued items to updating while there is room; returns the ones just started.
     pub fn start_ready(&mut self) -> Vec<String> {
-        let mut running = self.status.values().filter(|s| matches!(s, Status::Updating(_))).count();
+        let mut running: HashMap<&str, usize> = HashMap::new();
+        for (id, s) in &self.status {
+            if matches!(s, Status::Updating(_)) {
+                *running.entry(self.lane(id).0).or_default() += 1;
+            }
+        }
+        // Smallest download first; unknown sizes last. Ties keep the batch order.
+        let mut order: Vec<&String> = self.batch.iter().collect();
+        order.sort_by_key(|id| self.sizes.get(*id).copied().unwrap_or(u32::MAX));
         let mut started = Vec::new();
-        // Batch order keeps the start order stable (HashMap iteration is not).
-        for id in &self.batch {
-            if running >= self.concurrency {
-                break;
+        for id in order {
+            let (lane, limit) = self.lane(id);
+            let count = running.entry(lane).or_default();
+            if *count >= limit || self.status.get(id) != Some(&Status::Queued) {
+                continue;
             }
-            if let Some(s) = self.status.get_mut(id)
-                && *s == Status::Queued
-            {
-                *s = Status::Updating(0.0);
-                running += 1;
-                started.push(id.clone());
-            }
+            *count += 1;
+            started.push(id.clone());
+        }
+        for id in &started {
+            self.status.insert(id.clone(), Status::Updating(0.0));
         }
         started
     }
@@ -202,6 +230,19 @@ mod tests {
         q.finish("c", Ok(()));
         assert!(!q.is_busy());
         assert_eq!(q.batch_progress(), (3, 3, 100.0));
+    }
+
+    #[test]
+    fn each_manager_runs_what_it_can_in_parallel_and_the_smallest_first() {
+        let ids = ["cask:big", "cask:tiny", "cask:mid", "apt:one", "apt:two", "flatpak:a", "flatpak:b", "flatpak:c", "flatpak:d"];
+        let mut q = Queue::new(ids.map(String::from), 2);
+        q.set_sizes([("cask:big".into(), 900), ("cask:tiny".into(), 5), ("cask:mid".into(), 80)]);
+        q.enqueue(ids);
+        // Two Homebrew (the smallest), one apt, three Flatpak.
+        assert_eq!(q.start_ready(), ["cask:tiny", "cask:mid", "apt:one", "flatpak:a", "flatpak:b", "flatpak:c"]);
+        q.finish("cask:tiny", Ok(()));
+        q.finish("apt:one", Ok(()));
+        assert_eq!(q.start_ready(), ["cask:big", "apt:two"]);
     }
 
     #[test]

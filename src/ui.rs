@@ -159,6 +159,8 @@ pub struct UpdatesApp {
     pub(crate) setup_error: Option<String>,
     was_focused: bool,
     last_logic: Instant,
+    /// System Settings was already opened for the missing permission during this run.
+    perm_prompted: bool,
     /// Frames left before hiding the window (started with `--background`).
     hide_in: Option<u8>,
     pub(crate) login: bool,
@@ -167,7 +169,8 @@ pub struct UpdatesApp {
     pub(crate) back: Page,
 }
 
-const CONCURRENCY: usize = 2;
+/// Homebrew downloads in parallel.
+const CONCURRENCY: usize = 5;
 
 impl UpdatesApp {
     pub fn new(ctx: egui::Context, start_hidden: bool) -> Self {
@@ -224,6 +227,7 @@ impl UpdatesApp {
             setup_error: None,
             was_focused: true,
             last_logic: Instant::now(),
+            perm_prompted: false,
             hide_in: start_hidden.then_some(3),
             login: autostart::enabled(),
             login_error: None,
@@ -384,6 +388,7 @@ impl UpdatesApp {
                 self.scan_warning = warning;
                 self.request_icons(&apps);
                 self.queue = Queue::new(apps.iter().map(|a| a.id.clone()), CONCURRENCY);
+                self.queue.set_sizes(apps.iter().filter_map(|a| Some((a.id.clone(), a.size_mb?))));
                 self.apps = apps;
                 self.selected.clear();
                 let pending = std::mem::take(&mut self.update_after_scan);
@@ -450,6 +455,8 @@ impl UpdatesApp {
             Sort::Newest => rows.sort_by_key(|&i| (self.apps[i].installed_at.is_none(), std::cmp::Reverse(self.apps[i].installed_at))),
             Sort::Oldest => rows.sort_by_key(|&i| (self.apps[i].installed_at.is_none(), self.apps[i].installed_at)),
         }
+        // Updated apps sink to the bottom, so it is easy to see which ones are done.
+        rows.sort_by_key(|&i| self.queue.status(&self.apps[i].id) == Status::Done);
         rows
     }
 
@@ -534,6 +541,11 @@ impl eframe::App for UpdatesApp {
             self.access = crate::permissions::app_management();
         }
         self.was_focused = focused;
+        // Ask for «App Management» up front, not when the first update fails: open its pane once.
+        if cfg!(target_os = "macos") && !self.perm_prompted && self.access == crate::permissions::Access::Denied && matches!(self.page, Page::Welcome | Page::Updates) {
+            self.perm_prompted = true;
+            crate::permissions::open_settings();
+        }
         egui::Panel::left("nav")
             .exact_size(236.0)
             .resizable(false)
@@ -722,6 +734,9 @@ impl UpdatesApp {
 
         if self.queue.is_busy() {
             self.batch_banner(ui);
+            ui.add_space(22.0);
+        }
+        if self.permission_banner(ui) {
             ui.add_space(22.0);
         }
         if self.setup_banner(ui) {
@@ -917,6 +932,37 @@ impl UpdatesApp {
             } else {
                 crate::selfupdate::open(&release.url);
             }
+        }
+        true
+    }
+
+    /// macOS blocks changes to other apps until «App Management» is on: say so before updating.
+    fn permission_banner(&mut self, ui: &mut Ui) -> bool {
+        if !cfg!(target_os = "macos") || self.access != crate::permissions::Access::Denied {
+            return false;
+        }
+        let mut open = false;
+        Frame::new()
+            .fill(banner_bg())
+            .stroke(Stroke::new(1.0, Color32::from_rgba_unmultiplied(0xFF, 0x8A, 0x2A, 77)))
+            .corner_radius(14)
+            .inner_margin(Margin::symmetric(18, 16))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 12.0;
+                    ui.vertical(|ui| {
+                        ui.set_width(ui.available_width() - 200.0);
+                        ui.spacing_mut().item_spacing.y = 4.0;
+                        ui.label(RichText::new(t("Falta el permiso «Gestión de apps»")).size(14.0).family(semibold()));
+                        ui.label(RichText::new(t("macOS lo pide para que Updateeer pueda actualizar tus apps. Actívalo ahora en Ajustes del Sistema → Privacidad y seguridad → Gestión de apps.")).size(13.0).color(muted()));
+                    });
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        open = widgets::button(ui, None, t("Abrir ajustes"), Kind::Primary, 36.0, true).clicked();
+                    });
+                });
+            });
+        if open {
+            crate::permissions::open_settings();
         }
         true
     }
