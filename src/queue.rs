@@ -48,6 +48,19 @@ impl Queue {
         }
     }
 
+    /// Stops tracking an app (the user skipped its update).
+    pub fn forget(&mut self, id: &str) {
+        self.status.remove(id);
+        self.errors.remove(id);
+        self.attempts.remove(id);
+        self.batch.retain(|b| b != id);
+    }
+
+    /// Tracks an app again, as available.
+    pub fn track(&mut self, id: &str) {
+        self.status.entry(id.to_string()).or_insert(Status::Available);
+    }
+
     pub fn set_concurrency(&mut self, n: usize) {
         self.concurrency = n;
     }
