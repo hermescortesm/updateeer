@@ -48,6 +48,10 @@ impl Queue {
         }
     }
 
+    pub fn set_concurrency(&mut self, n: usize) {
+        self.concurrency = n;
+    }
+
     pub fn set_sizes(&mut self, sizes: impl IntoIterator<Item = (String, u32)>) {
         self.sizes = sizes.into_iter().collect();
     }

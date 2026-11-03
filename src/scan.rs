@@ -58,6 +58,11 @@ pub fn brew(args: &[&str], timeout: Duration, auto_update: bool) -> Result<Strin
     if !auto_update {
         cmd.env("HOMEBREW_NO_AUTO_UPDATE", "1").env("HOMEBREW_NO_INSTALL_CLEANUP", "1");
     }
+    #[cfg(target_os = "macos")]
+    if let Some(p) = crate::askpass::script() {
+        // Cask pkg installers call sudo without a terminal; brew then adds `-A` and sudo asks through this.
+        cmd.env("SUDO_ASKPASS", p);
+    }
     run(cmd, args, timeout)
 }
 

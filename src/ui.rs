@@ -169,9 +169,6 @@ pub struct UpdatesApp {
     pub(crate) back: Page,
 }
 
-/// Homebrew downloads in parallel.
-const CONCURRENCY: usize = 5;
-
 impl UpdatesApp {
     pub fn new(ctx: egui::Context, start_hidden: bool) -> Self {
         let (done_tx, done_rx) = mpsc::channel();
@@ -191,7 +188,7 @@ impl UpdatesApp {
             icon_asked: HashSet::new(),
             icon_tx,
             icon_rx,
-            queue: Queue::new([], CONCURRENCY),
+            queue: Queue::new([], 5),
             ctx,
             scan_rx: None,
             scan_error: None,
@@ -387,7 +384,7 @@ impl UpdatesApp {
             Ok((apps, warning)) => {
                 self.scan_warning = warning;
                 self.request_icons(&apps);
-                self.queue = Queue::new(apps.iter().map(|a| a.id.clone()), CONCURRENCY);
+                self.queue = Queue::new(apps.iter().map(|a| a.id.clone()), self.settings.parallel as usize);
                 self.queue.set_sizes(apps.iter().filter_map(|a| Some((a.id.clone(), a.size_mb?))));
                 self.apps = apps;
                 self.selected.clear();
