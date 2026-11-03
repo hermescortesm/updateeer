@@ -13,7 +13,7 @@
 ## What it does
 
 - **Finds what is outdated.** Scans your package managers, compares installed and available versions and lists every app with an update.
-- **Updates from a queue.** Update one app, a selection, or everything at once. Two updates run in parallel, failed ones are retried once, and each row shows its progress.
+- **Updates from a queue.** Update one app, a selection, or everything at once. Up to five Homebrew updates run in parallel (configurable in Settings), failed ones are retried once, and each row shows its progress.
 - **Cancel any time.** Cancelling stops the running updates (and everything they launched) and puts the apps back to "available".
 - **Shows everything installed.** An *Installed* page lists every app with its source, version and install date, including apps you downloaded by hand (macOS).
 - **Discover new apps.** A curated catalog of about 90 free apps (browsers, development, utilities, communication, media, productivity, games) you can install with one click, plus an online search through Homebrew, winget, Flathub and apt. Each row shows where the app comes from; apps that are already on the system offer *Uninstall* instead of *Install*, even when another package manager installed them.

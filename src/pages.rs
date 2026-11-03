@@ -10,7 +10,7 @@ use crate::i18n::{t, tf1, Lang};
 use crate::model::{self, App};
 use crate::notify;
 use crate::scan;
-use crate::settings::{HOURS, ThemeMode};
+use crate::settings::{HOURS, PARALLEL, ThemeMode};
 use crate::theme::*;
 use crate::queue::Status;
 use crate::catalog::{self, Cat};
@@ -657,6 +657,18 @@ impl UpdatesApp {
                         });
                     });
             });
+            setting_row(ui, t("Actualizaciones en paralelo"), t("Cuántas apps de Homebrew se actualizan a la vez."), |ui| {
+                Frame::new().fill(field()).stroke(Stroke::new(1.0, tint(20))).corner_radius(12).inner_margin(4).show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    ui.horizontal(|ui| {
+                        for n in PARALLEL {
+                            if segment(ui, &n.to_string(), self.settings.parallel == n).clicked() {
+                                self.settings.parallel = n;
+                            }
+                        }
+                    });
+                });
+            });
             if crate::autostart::supported() {
                 let desc = self.login_error.clone().unwrap_or_else(|| t("Se abre en la barra de menú al encender el equipo.").into());
                 let mut on = self.login;
@@ -754,6 +766,7 @@ impl UpdatesApp {
             self.set_login(on);
         }
         if self.settings != before {
+            self.queue.set_concurrency(self.settings.parallel as usize);
             self.settings.save();
         }
     }
