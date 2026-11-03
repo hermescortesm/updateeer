@@ -43,5 +43,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release view $env:GITHUB_REF_NAME 2>$null
-          if ($LASTEXITCODE -ne 0) { gh release create $env:GITHUB_REF_NAME --title "Updateeer $env:GITHUB_REF_NAME" --notes "See the assets below." }
+          if ($LASTEXITCODE -ne 0) { gh release create $env:GITHUB_REF_NAME --title "Updateeer $env:GITHUB_REF_NAME" --draft --notes "See the assets below." }
           gh release upload $env:GITHUB_REF_NAME (Get-ChildItem dist/*.msi).FullName --clobber
