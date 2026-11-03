@@ -139,6 +139,12 @@ fn wanted_file() -> Result<(String, &'static str), String> {
     }
 }
 
+/// Whether the release carries an installer for this system. A release without one (still being
+/// uploaded) is not announced, so nobody is offered an update that cannot be installed.
+pub fn has_installer(release: &Release) -> bool {
+    wanted_file().map_or(true, |(suffix, _)| release.assets.iter().any(|a| a.name.ends_with(&suffix)))
+}
+
 /// Downloads the installer for this system, checks its SHA-256, installs it and starts the new
 /// version; the caller then exits the old one. Blocks, so call it from a worker thread.
 pub fn install(release: &Release) -> Result<(), String> {
@@ -349,6 +355,17 @@ mod tests {
         assert_eq!(parse(ok).unwrap(), Release { version: "0.1.7".into(), url: "https://github.com/hermescortesm/updateeer/releases/tag/v0.1.7".into(), assets: vec![], notes: String::new() });
         assert!(parse(r#"{"tag_name":"v1","html_url":"https://evil.example/x"}"#).is_err());
         assert!(parse("not json").is_err());
+    }
+
+    #[test]
+    fn a_release_without_my_installer_is_not_announced() {
+        let (suffix, _) = wanted_file().unwrap_or_default();
+        let mut r = Release { version: "9".into(), url: String::new(), assets: vec![], notes: String::new() };
+        if !suffix.is_empty() {
+            assert!(!has_installer(&r));
+            r.assets.push(Asset { name: format!("Updateeer-9-{suffix}"), url: String::new(), sha256: None, size: 0 });
+        }
+        assert!(has_installer(&r));
     }
 
     #[test]

@@ -433,6 +433,10 @@ impl UpdatesApp {
                 if can_update && widgets::button(ui, Some(Icon::Download), label, Kind::Primary, 44.0, true).clicked() {
                     self.queue.enqueue([app.id.as_str()]);
                 }
+                if can_update && !self.queue.is_busy() && widgets::button(ui, None, t("Ignorar esta versión"), Kind::Ghost, 44.0, true).clicked() {
+                    self.skip_update(&app);
+                    self.page = self.back;
+                }
             });
         });
         ui.add_space(22.0);
@@ -640,6 +644,16 @@ impl UpdatesApp {
             setting_row(ui, t("Avisar de versiones nuevas de Updateeer"), t("Consulta GitHub al buscar actualizaciones. Es la única conexión que hace la app por su cuenta."), |ui| {
                 widgets::toggle(ui, &mut self.settings.check_updates);
             });
+            setting_row(ui, t("Programar actualizaciones"), t("Una vez al día a la hora elegida: busca y actualiza solo, con la app abierta o en la barra. Las apps abiertas te avisan antes."), |ui| {
+                let label = |h: Option<u8>| h.map_or_else(|| t("Desactivada").to_string(), |h| format!("{h:02}:00"));
+                egui::ComboBox::from_id_salt("schedule").selected_text(label(self.settings.schedule)).show_ui(ui, |ui| {
+                    for h in std::iter::once(None).chain((0..24).map(Some)) {
+                        if ui.selectable_label(self.settings.schedule == h, label(h)).clicked() {
+                            self.settings.schedule = h;
+                        }
+                    }
+                });
+            });
             setting_row(ui, t("Frecuencia"), t("Cada cuánto se repite la búsqueda."), |ui| {
                 Frame::new()
                     .fill(field())
@@ -735,6 +749,23 @@ impl UpdatesApp {
                 });
             }
         });
+        if !self.skipped_apps.is_empty() {
+            ui.add_space(16.0);
+            let mut restore = None;
+            card(ui, |ui| {
+                setting_row(ui, t("Actualizaciones ignoradas"), t("Vuelven a salir cuando haya una versión más nueva."), |_| {});
+                for app in &self.skipped_apps {
+                    setting_row(ui, &app.name, &format!("{} → {}", app.from, app.to), |ui| {
+                        if widgets::button(ui, None, t("Dejar de ignorar"), Kind::Soft, 34.0, true).clicked() {
+                            restore = Some(app.id.clone());
+                        }
+                    });
+                }
+            });
+            if let Some(id) = restore {
+                self.unskip_update(&id);
+            }
+        }
         ui.add_space(16.0);
         card(ui, |ui| {
             Frame::new().inner_margin(18).show(ui, |ui| {

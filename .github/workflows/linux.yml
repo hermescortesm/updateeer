@@ -41,7 +41,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --title "Updateeer $GITHUB_REF_NAME" --notes "See the assets below."
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --title "Updateeer $GITHUB_REF_NAME" --draft --notes "See the assets below."
           gh release upload "$GITHUB_REF_NAME" dist/*.deb --clobber
 
   arch:
@@ -78,7 +78,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.release || github.ref_name }}
         run: |
-          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "Updateeer $GITHUB_REF_NAME" --notes "See the assets below."
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "Updateeer $GITHUB_REF_NAME" --draft --notes "See the assets below."
           gh release upload "$TAG" dist/*.pkg.tar.zst --clobber
 
   rpm:
@@ -109,5 +109,5 @@ jobs:
           TAG: ${{ inputs.release || github.ref_name }}
         run: |
           git config --global --add safe.directory "$PWD"
-          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "Updateeer $GITHUB_REF_NAME" --notes "See the assets below."
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "Updateeer $GITHUB_REF_NAME" --draft --notes "See the assets below."
           gh release upload "$TAG" dist/*.rpm --clobber
