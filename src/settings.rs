@@ -48,11 +48,13 @@ pub struct Settings {
     /// Interface language; `None` until the user picks one on first run.
     pub lang: Option<crate::i18n::Lang>,
     pub parallel: u32,
+    /// Hour of the day (0-23) when the app searches and updates on its own.
+    pub schedule: Option<u8>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { auto: true, hours: 6, theme: ThemeMode::System, hide_setup: false, auto_update: false, onboarded: false, check_updates: true, lang: None, parallel: 5 }
+        Self { auto: true, hours: 6, theme: ThemeMode::System, hide_setup: false, auto_update: false, onboarded: false, check_updates: true, lang: None, parallel: 5, schedule: None }
     }
 }
 
@@ -84,6 +86,7 @@ impl Settings {
             hide_setup: v["hide_setup"].as_bool().unwrap_or(d.hide_setup),
             theme: v["theme"].as_str().map_or(d.theme, ThemeMode::from_name),
             parallel: v["parallel"].as_u64().map(|h| h as u32).filter(|h| PARALLEL.contains(h)).unwrap_or(d.parallel),
+            schedule: v["schedule"].as_u64().filter(|h| *h < 24).map(|h| h as u8),
             hours: v["hours"].as_u64().map(|h| h as u32).filter(|h| HOURS.contains(h)).unwrap_or(d.hours),
         }
     }
@@ -94,7 +97,7 @@ impl Settings {
         if let Some(dir) = p.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        let _ = std::fs::write(p, json!({ "auto": self.auto, "hours": self.hours, "theme": self.theme.name(), "hide_setup": self.hide_setup, "auto_update": self.auto_update, "onboarded": self.onboarded, "check_updates": self.check_updates, "lang": self.lang.map(|l| l.code()), "parallel": self.parallel }).to_string());
+        let _ = std::fs::write(p, json!({ "auto": self.auto, "hours": self.hours, "theme": self.theme.name(), "hide_setup": self.hide_setup, "auto_update": self.auto_update, "onboarded": self.onboarded, "check_updates": self.check_updates, "lang": self.lang.map(|l| l.code()), "parallel": self.parallel, "schedule": self.schedule }).to_string());
     }
 }
 
@@ -104,7 +107,9 @@ mod tests {
 
     #[test]
     fn parse_validates_and_defaults() {
-        assert_eq!(Settings::parse(r#"{"auto":false,"hours":12,"theme":"light"}"#), Settings { auto: false, hours: 12, theme: ThemeMode::Light, hide_setup: false, auto_update: false, onboarded: false, check_updates: true, lang: None, parallel: 5 });
+        assert_eq!(Settings::parse(r#"{"auto":false,"hours":12,"theme":"light"}"#), Settings { auto: false, hours: 12, theme: ThemeMode::Light, hide_setup: false, auto_update: false, onboarded: false, check_updates: true, lang: None, parallel: 5, schedule: None });
+        assert_eq!(Settings::parse(r#"{"schedule":3}"#).schedule, Some(3));
+        assert_eq!(Settings::parse(r#"{"schedule":30}"#).schedule, None);
         assert_eq!(Settings::parse(r#"{"parallel":2}"#).parallel, 2);
         assert_eq!(Settings::parse(r#"{"parallel":4}"#).parallel, 5);
         assert_eq!(Settings::parse(r#"{"lang":"ja"}"#).lang, Some(crate::i18n::Lang::Ja));

@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant, SystemTime};
+use std::process::Command;
 use std::thread;
 
 use eframe::egui::{
@@ -20,6 +21,7 @@ use crate::tray::{self, Tray};
 use crate::autostart;
 use crate::icons;
 use crate::settings::{Settings, ThemeMode};
+use crate::skip;
 use crate::{mas, scan, upgrade};
 use crate::theme::{self, *};
 use crate::widgets::{self, Icon, Kind};
@@ -167,6 +169,13 @@ pub struct UpdatesApp {
     pub(crate) login_error: Option<String>,
     pub(crate) detail: Option<App>,
     pub(crate) back: Page,
+    /// Skipped updates (id -> skipped version) and the apps hidden because of them.
+    pub(crate) skipped: HashMap<String, String>,
+    pub(crate) skipped_apps: Vec<App>,
+    /// Scheduled update: the day it last ran, and a search that must end with an update pass.
+    sched_day: Option<u32>,
+    sched_run: bool,
+    last_sched: Instant,
 }
 
 impl UpdatesApp {
@@ -230,6 +239,11 @@ impl UpdatesApp {
             login_error: None,
             detail: None,
             back: Page::Updates,
+            skipped: skip::load(),
+            skipped_apps: Vec::new(),
+            sched_day: None,
+            sched_run: false,
+            last_sched: Instant::now(),
         };
         app.tray = Tray::new(&app.ctx, app.login);
         app.start_scan();
@@ -303,7 +317,7 @@ impl UpdatesApp {
         let Ok(result) = rx.try_recv() else { return };
         self.release_rx = None;
         // A failed check (offline, rate limit) is silent: nothing to tell the user.
-        self.new_release = result.ok().filter(|r| crate::selfupdate::is_newer(env!("CARGO_PKG_VERSION"), &r.version));
+        self.new_release = result.ok().filter(|r| crate::selfupdate::is_newer(env!("CARGO_PKG_VERSION"), &r.version) && crate::selfupdate::has_installer(r));
     }
 
     fn start_scan(&mut self) {
@@ -326,9 +340,9 @@ impl UpdatesApp {
 
     /// Auto-update: apps that are not running update on their own, open ones get a notification
     /// asking for "now" or "later". Off unless the user turned it on.
-    fn auto_pass(&mut self) {
+    fn auto_pass(&mut self, force: bool) {
         self.last_auto = Instant::now();
-        if !self.settings.auto_update || self.scanning() {
+        if !(force || self.settings.auto_update) || self.scanning() {
             return;
         }
         let procs = running::processes();
@@ -351,6 +365,50 @@ impl UpdatesApp {
         }
         self.notifier.ask(&ask);
         self.queue.enqueue(idle.iter().map(String::as_str));
+    }
+
+    /// Scheduled update: once a day, at the chosen hour, search and then run the same pass as
+    /// auto-update (idle apps update, open ones ask first).
+    fn schedule_tick(&mut self) {
+        let Some(hour) = self.settings.schedule else { return };
+        if self.last_sched.elapsed() < Duration::from_secs(30) || self.scanning() || self.queue.is_busy() {
+            return;
+        }
+        self.last_sched = Instant::now();
+        let Some((day, now)) = local_day_hour() else { return };
+        if now == u32::from(hour) && self.sched_day != Some(day) {
+            self.sched_day = Some(day);
+            self.sched_run = true;
+            self.start_scan();
+            if !self.scanning() {
+                self.sched_run = false;
+            }
+        }
+    }
+
+    /// Hides this update until a newer version than `app.to` appears.
+    pub(crate) fn skip_update(&mut self, app: &App) {
+        if !matches!(self.queue.status(&app.id), Status::Available | Status::Failed) {
+            return;
+        }
+        self.skipped.insert(app.id.clone(), app.to.clone());
+        skip::save(&self.skipped);
+        self.queue.forget(&app.id);
+        self.selected.remove(&app.id);
+        if let Some(i) = self.apps.iter().position(|a| a.id == app.id) {
+            self.skipped_apps.push(self.apps.remove(i));
+        }
+    }
+
+    pub(crate) fn unskip_update(&mut self, id: &str) {
+        self.skipped.remove(id);
+        skip::save(&self.skipped);
+        if let Some(i) = self.skipped_apps.iter().position(|a| a.id == id) {
+            let app = self.skipped_apps.remove(i);
+            self.queue.track(&app.id);
+            self.apps.push(app);
+            self.apps.sort_by_key(|a| a.name.to_lowercase());
+        }
     }
 
     fn poll_notify(&mut self) {
@@ -383,6 +441,8 @@ impl UpdatesApp {
         match result {
             Ok((apps, warning)) => {
                 self.scan_warning = warning;
+                let (skipped, apps): (Vec<App>, Vec<App>) = apps.into_iter().partition(|a| self.skipped.get(&a.id) == Some(&a.to));
+                self.skipped_apps = skipped;
                 self.request_icons(&apps);
                 self.queue = Queue::new(apps.iter().map(|a| a.id.clone()), self.settings.parallel as usize);
                 self.queue.set_sizes(apps.iter().filter_map(|a| Some((a.id.clone(), a.size_mb?))));
@@ -390,7 +450,8 @@ impl UpdatesApp {
                 self.selected.clear();
                 let pending = std::mem::take(&mut self.update_after_scan);
                 self.queue.enqueue(pending.iter().map(String::as_str));
-                self.auto_pass();
+                let scheduled = std::mem::take(&mut self.sched_run);
+                self.auto_pass(scheduled);
             }
             Err(e) => self.scan_error = Some(e),
         }
@@ -497,9 +558,10 @@ impl eframe::App for UpdatesApp {
             }
         }
         if self.settings.auto_update && self.last_auto.elapsed() >= Duration::from_secs(60) {
-            self.auto_pass();
+            self.auto_pass(false);
         }
-        if self.settings.auto || self.settings.auto_update {
+        self.schedule_tick();
+        if self.settings.auto || self.settings.auto_update || self.settings.schedule.is_some() {
             if self.settings.auto && self.last_scan.elapsed() >= Duration::from_secs(self.settings.hours as u64 * 3600) {
                 self.start_scan();
             }
@@ -1072,6 +1134,17 @@ impl UpdatesApp {
 }
 
 /// Caption plus a dropdown over `options`.
+/// `(day number, hour)` on this computer's clock, from the system tools (no time library needed).
+fn local_day_hour() -> Option<(u32, u32)> {
+    let out = if cfg!(windows) {
+        scan::run(Command::new("powershell"), &["-NoProfile", "-Command", "Get-Date -Format 'yyyyMMdd HH'"], Duration::from_secs(20)).ok()?
+    } else {
+        scan::run(Command::new("/bin/date"), &["+%Y%m%d %H"], Duration::from_secs(5)).ok()?
+    };
+    let (day, hour) = out.trim().split_once(' ')?;
+    Some((day.parse().ok()?, hour.parse().ok()?))
+}
+
 pub(crate) fn combo<T: PartialEq + Copy>(ui: &mut Ui, caption: &str, value: &mut T, options: &[(T, &str)]) {
     ui.label(RichText::new(caption).size(12.5).color(faint()));
     let current = options.iter().find(|o| o.0 == *value).map_or("", |o| o.1);
