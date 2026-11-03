@@ -166,7 +166,7 @@ fn id_of(flag: &str) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-fn random_token() -> Result<String, String> {
+pub(crate) fn random_token() -> Result<String, String> {
     let mut bytes = [0u8; 16];
     std::io::Read::read_exact(&mut fs::File::open("/dev/urandom").map_err(|e| e.to_string())?, &mut bytes).map_err(|e| e.to_string())?;
     Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
