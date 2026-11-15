@@ -20,7 +20,7 @@ case $target in
   *) echo "unsupported target $target" >&2; exit 1 ;;
 esac
 
-cargo build --release --locked --target "$target"
+cargo build --release --target "$target"
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
