@@ -2,8 +2,9 @@
 //!
 //! brew runs without a terminal, so sudo needs an askpass program. The program is a tiny script
 //! that asks this process over a private Unix socket. The first request shows the macOS dialog,
-//! checks the password with sudo and keeps it in memory; later requests are answered from memory.
-//! The password never touches the disk. The socket folder is 0700 and requests carry a random token.
+//! checks the password with sudo and stores it in the Keychain; later requests (even after a
+//! restart or version upgrade) are answered from the Keychain. The socket folder is 0700 and
+//! requests carry a random token.
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixListener;
@@ -11,6 +12,8 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
+
+const KEYCHAIN_SERVICE: &str = "updateeer-sudo";
 
 static SCRIPT: OnceLock<Option<PathBuf>> = OnceLock::new();
 static PASSWORD: Mutex<Option<String>> = Mutex::new(None);
@@ -20,6 +23,44 @@ static CANCELLED: Mutex<Option<Instant>> = Mutex::new(None);
 /// Path for `SUDO_ASKPASS`; starts the server on first use.
 pub fn script() -> Option<&'static PathBuf> {
     SCRIPT.get_or_init(start).as_ref()
+}
+
+/// Retrieve the cached password from the macOS Keychain.
+fn keychain_get() -> Option<String> {
+    let out = Command::new("/usr/bin/security")
+        .args(["find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if out.status.success() {
+        let pw = String::from_utf8_lossy(&out.stdout).trim_end_matches('\n').to_string();
+        if !pw.is_empty() {
+            return Some(pw);
+        }
+    }
+    None
+}
+
+/// Store the password in the macOS Keychain so it survives restarts and version upgrades.
+fn keychain_set(pw: &str) {
+    let _ = Command::new("/usr/bin/security")
+        .args(["add-generic-password", "-s", KEYCHAIN_SERVICE, "-a", "updateeer", "-w", pw, "-T", "/usr/bin/sudo"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+/// Update an existing Keychain entry (in case the password changed).
+fn keychain_update(pw: &str) {
+    let _ = Command::new("/usr/bin/security")
+        .args(["update-generic-password", "-s", KEYCHAIN_SERVICE, "-w", pw])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
 }
 
 fn start() -> Option<PathBuf> {
@@ -51,6 +92,20 @@ fn password() -> Option<String> {
     if cached.is_some() {
         return cached.clone();
     }
+    // Try the Keychain first — avoids the dialog on restarts and after version upgrades.
+    if let Some(pw) = keychain_get() {
+        if valid(&pw) {
+            *cached = Some(pw.clone());
+            return Some(pw);
+        }
+        // Stale password in Keychain — remove it so we ask fresh.
+        let _ = Command::new("/usr/bin/security")
+            .args(["delete-generic-password", "-s", KEYCHAIN_SERVICE])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
     if CANCELLED.lock().unwrap_or_else(|e| e.into_inner()).is_some_and(|t| t.elapsed() < Duration::from_secs(30)) {
         return None;
     }
@@ -60,6 +115,8 @@ fn password() -> Option<String> {
             return None;
         };
         if valid(&pw) {
+            // Store in Keychain so future restarts don't ask again.
+            keychain_set(&pw);
             *cached = Some(pw.clone());
             return Some(pw);
         }

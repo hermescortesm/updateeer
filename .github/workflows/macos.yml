@@ -10,33 +10,45 @@ permissions:
   contents: write
 
 jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+      - name: Test
+        run: cargo test --release --locked
+
   dmg:
     runs-on: macos-latest
+    needs: test
+    strategy:
+      matrix:
+        target: [aarch64-apple-darwin, x86_64-apple-darwin]
+        include:
+          - target: aarch64-apple-darwin
+            arch: arm64
+          - target: x86_64-apple-darwin
+            arch: x86_64
     steps:
       - uses: actions/checkout@v4
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
 
-      - name: Test
-        run: cargo test --release --locked
-
-      - name: Build
-        run: cargo build --release --locked
-
-      - name: Install dmgbuild
-        run: pip3 install dmgbuild
-
       - name: Build the .dmg
         run: |
+          python3 -m venv .venv
+          source .venv/bin/activate
+          pip install dmgbuild
           mkdir -p dist
-          tools/package-macos.sh
+          tools/package-macos.sh ${{ matrix.target }}
           ls -lh dist/*.dmg
           shasum -a 256 dist/*.dmg
 
       - uses: actions/upload-artifact@v4
         with:
-          name: macos-dmg
+          name: macos-dmg-${{ matrix.arch }}
           path: dist/*.dmg
 
       - name: Attach to the release
