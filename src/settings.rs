@@ -32,7 +32,7 @@ impl ThemeMode {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug)]
 pub struct Settings {
     pub auto: bool,
     pub hours: u32,
