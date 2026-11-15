@@ -367,6 +367,10 @@ const TABLE: &[(&str, [&str; 6])] = &[
     ("Vuelven a salir cuando haya una versión más nueva.", ["They come back when a newer version is out.", "Voltam a aparecer quando houver uma versão mais nova.", "Elles reviennent quand une version plus récente sort.", "Sie erscheinen wieder, sobald eine neuere Version erscheint.", "より新しいバージョンが出ると再び表示されます。", "有更新的版本时会重新出现。"]),
     ("Dejar de ignorar", ["Stop ignoring", "Parar de ignorar", "Ne plus ignorer", "Nicht mehr überspringen", "スキップを解除", "取消跳过"]),
     ("Cancelaste la petición de contraseña", ["You cancelled the password request", "Você cancelou o pedido de senha", "Vous avez annulé la demande de mot de passe", "Sie haben die Passwortabfrage abgebrochen", "パスワードの入力をキャンセルしました", "你取消了密码请求"]),
+    // Batch summary notification
+    ("{0} actualizadas", ["{0} updated", "{0} atualizados", "{0} mises à jour", "{0} aktualisiert", "{0} 件更新済み", "{0} 个已更新"]),
+    ("{0} actualizadas, {1} fallidas", ["{0} updated, {1} failed", "{0} atualizados, {1} com falha", "{0} mises à jour, {1} échouées", "{0} aktualisiert, {1} fehlgeschlagen", "{0} 件更新済み、{1} 件失敗", "{0} 个已更新，{1} 个失败"]),
+    ("Las actualizaciones han terminado", ["Updates complete", "As atualizações foram concluídas", "Mises à jour terminées", "Updates abgeschlossen", "更新が完了しました", "更新已完成"]),
 ];
 
 #[cfg(test)]

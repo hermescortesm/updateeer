@@ -23,11 +23,61 @@ use crate::icons;
 use crate::settings::{Settings, ThemeMode};
 use crate::skip;
 use crate::{mas, scan, upgrade};
-use crate::theme::{self, *};
+use crate::theme;
+use crate::theme::*;
 use crate::widgets::{self, Icon, Kind};
 
+// — Grouped state structs —
+
+/// Background scan channel and its result.
+pub(crate) struct ScanState {
+    pub(crate) rx: Option<Receiver<Result<scan::Found, String>>>,
+    pub(crate) error: Option<String>,
+    pub(crate) warning: Option<String>,
+    pub(crate) last_scan: Instant,
+}
+
+/// Updateeer self-update state.
+pub(crate) struct SelfUpdateState {
+    pub(crate) new_release: Option<crate::selfupdate::Release>,
+    pub(crate) release_rx: Option<Receiver<Result<crate::selfupdate::Release, String>>>,
+    pub(crate) self_update_rx: Option<Receiver<Result<(), String>>>,
+    pub(crate) self_update_error: Option<String>,
+    /// The progress bar as drawn: it eases toward the real progress.
+    pub(crate) update_shown: f32,
+    pub(crate) show_notes: bool,
+}
+
+/// Filter controls for the updates list.
+pub(crate) struct FilterState {
+    pub(crate) query: String,
+    pub(crate) filter: Filter,
+    pub(crate) kind: Type,
+    pub(crate) age: Age,
+    pub(crate) sort: Sort,
+}
+
+/// First-run setup state (macOS).
+pub(crate) struct SetupState {
+    pub(crate) tools: (bool, bool), // (Homebrew found, mas found)
+    pub(crate) access: crate::permissions::Access,
+    pub(crate) mas_install: Option<Receiver<Result<(), String>>>,
+    pub(crate) setup_error: Option<String>,
+    pub(crate) perm_prompted: bool,
+}
+
+/// Tray, quit, and background-launch state.
+pub(crate) struct TrayState {
+    pub(crate) tray: Option<Tray>,
+    pub(crate) quitting: bool,
+    /// Frames left before hiding the window (started with `--background`).
+    pub(crate) hide_in: Option<u8>,
+    pub(crate) login: bool,
+    pub(crate) login_error: Option<String>,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Filter {
+pub(crate) enum Filter {
     All,
     Only(Source),
 }
@@ -52,7 +102,7 @@ type Scan = Receiver<Result<scan::Found, String>>;
 
 /// Kind of thing: graphical apps vs command-line tools (Homebrew formulae).
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Type {
+pub(crate) enum Type {
     All,
     Apps,
     Tools,
@@ -60,7 +110,7 @@ enum Type {
 
 /// How long ago the installed version arrived.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Age {
+pub(crate) enum Age {
     Any,
     Week,
     Month,
@@ -68,7 +118,7 @@ enum Age {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Sort {
+pub(crate) enum Sort {
     Name,
     Newest,
     Oldest,
@@ -109,32 +159,24 @@ type IconMsg = (String, Option<icons::Icon>);
 pub struct UpdatesApp {
     apps: Vec<App>,
     selected: HashSet<String>,
-    pub(crate) query: String,
-    filter: Filter,
-    kind: Type,
-    age: Age,
-    sort: Sort,
     pub(crate) icons: HashMap<String, egui::TextureHandle>,
     icon_asked: HashSet<String>,
     icon_tx: Sender<IconMsg>,
     icon_rx: Receiver<IconMsg>,
     pub(crate) queue: Queue,
     pub(crate) ctx: egui::Context,
-    scan_rx: Option<Scan>,
-    scan_error: Option<String>,
-    scan_warning: Option<String>,
     done_tx: Sender<(String, Result<(), String>)>,
     done_rx: Receiver<(String, Result<(), String>)>,
-    last_scan: Instant,
-    /// A newer Updateeer on GitHub, once found; and the check in flight.
-    pub(crate) new_release: Option<crate::selfupdate::Release>,
-    release_rx: Option<Receiver<Result<crate::selfupdate::Release, String>>>,
-    /// Updateeer replacing itself with the new package (Linux).
-    pub(crate) self_update_rx: Option<Receiver<Result<(), String>>>,
-    pub(crate) self_update_error: Option<String>,
-    /// The progress bar as drawn: it eases toward the real progress.
-    update_shown: std::cell::Cell<f32>,
-    show_notes: bool,
+    /// Background scan channel and its result.
+    pub(crate) scan: ScanState,
+    /// Updateeer self-update state.
+    pub(crate) self_update: SelfUpdateState,
+    /// Filter controls for the updates list.
+    pub(crate) filter_state: FilterState,
+    /// First-run setup state (macOS).
+    pub(crate) setup: SetupState,
+    /// Tray, quit, and background-launch state.
+    pub(crate) tray_state: TrayState,
     pub(crate) page: Page,
     pub(crate) settings: Settings,
     pub(crate) installed: Vec<App>,
@@ -145,8 +187,6 @@ pub struct UpdatesApp {
     /// A source failed while others worked: shown so missing apps are not a mystery.
     pub(crate) installed_warning: Option<String>,
     pub(crate) history: Vec<Entry>,
-    tray: Option<Tray>,
-    quitting: bool,
     notifier: Notifier,
     notify_rx: Receiver<Reply>,
     /// Apps we already asked about (or were told "later" for): no new question before this time.
@@ -154,19 +194,8 @@ pub struct UpdatesApp {
     /// "Update now" answers that arrived while a scan was replacing the queue.
     update_after_scan: Vec<String>,
     last_auto: Instant,
-    /// (Homebrew found, mas found).
-    pub(crate) tools: (bool, bool),
-    pub(crate) access: crate::permissions::Access,
-    mas_install: Option<Receiver<Result<(), String>>>,
-    pub(crate) setup_error: Option<String>,
     was_focused: bool,
     last_logic: Instant,
-    /// System Settings was already opened for the missing permission during this run.
-    perm_prompted: bool,
-    /// Frames left before hiding the window (started with `--background`).
-    hide_in: Option<u8>,
-    pub(crate) login: bool,
-    pub(crate) login_error: Option<String>,
     pub(crate) detail: Option<App>,
     pub(crate) back: Page,
     /// Skipped updates (id -> skipped version) and the apps hidden because of them.
@@ -176,6 +205,8 @@ pub struct UpdatesApp {
     sched_day: Option<u32>,
     sched_run: bool,
     last_sched: Instant,
+    /// Whether the queue was busy in the previous logic tick — detects batch completion.
+    prev_batch_busy: bool,
 }
 
 impl UpdatesApp {
@@ -185,32 +216,55 @@ impl UpdatesApp {
         let (notifier, notify_rx) = Notifier::new(&ctx);
         let settings = Settings::load();
         crate::i18n::set(settings.lang.unwrap_or_else(crate::i18n::detect));
+        let login = autostart::enabled();
+        let tools = detect_tools();
+        let access = crate::permissions::app_management();
         let mut app = Self {
             apps: Vec::new(),
             selected: HashSet::new(),
-            query: String::new(),
-            filter: Filter::All,
-            kind: Type::All,
-            age: Age::Any,
-            sort: Sort::Name,
             icons: HashMap::new(),
             icon_asked: HashSet::new(),
             icon_tx,
             icon_rx,
             queue: Queue::new([], 5),
             ctx,
-            scan_rx: None,
-            scan_error: None,
-            scan_warning: None,
             done_tx,
             done_rx,
-            last_scan: Instant::now(),
-            new_release: None,
-            release_rx: None,
-            self_update_rx: None,
-            self_update_error: None,
-            update_shown: std::cell::Cell::new(0.0),
-            show_notes: false,
+            scan: ScanState {
+                rx: None,
+                error: None,
+                warning: None,
+                last_scan: Instant::now(),
+            },
+            self_update: SelfUpdateState {
+                new_release: None,
+                release_rx: None,
+                self_update_rx: None,
+                self_update_error: None,
+                update_shown: 0.0,
+                show_notes: false,
+            },
+            filter_state: FilterState {
+                query: String::new(),
+                filter: Filter::All,
+                kind: Type::All,
+                age: Age::Any,
+                sort: Sort::Name,
+            },
+            setup: SetupState {
+                tools,
+                access,
+                mas_install: None,
+                setup_error: None,
+                perm_prompted: false,
+            },
+            tray_state: TrayState {
+                tray: None,
+                quitting: false,
+                hide_in: start_hidden.then_some(3),
+                login,
+                login_error: None,
+            },
             page: if settings.lang.is_none() { Page::Language } else if cfg!(target_os = "macos") && !settings.onboarded { Page::Welcome } else { Page::Updates },
             settings,
             installed: Vec::new(),
@@ -220,23 +274,13 @@ impl UpdatesApp {
             installed_error: None,
             installed_warning: None,
             history: history::load(),
-            tray: None,
-            quitting: false,
             notifier,
             notify_rx,
             snooze: HashMap::new(),
             update_after_scan: Vec::new(),
             last_auto: Instant::now(),
-            tools: detect_tools(),
-            access: crate::permissions::app_management(),
-            mas_install: None,
-            setup_error: None,
             was_focused: true,
             last_logic: Instant::now(),
-            perm_prompted: false,
-            hide_in: start_hidden.then_some(3),
-            login: autostart::enabled(),
-            login_error: None,
             detail: None,
             back: Page::Updates,
             skipped: skip::load(),
@@ -244,8 +288,9 @@ impl UpdatesApp {
             sched_day: None,
             sched_run: false,
             last_sched: Instant::now(),
+            prev_batch_busy: false,
         };
-        app.tray = Tray::new(&app.ctx, app.login);
+        app.tray_state.tray = Tray::new(&app.ctx, app.tray_state.login);
         app.start_scan();
         let past: Vec<App> = app.history.iter().map(|e| e.app.clone()).collect();
         app.request_icons(&past);
@@ -253,13 +298,13 @@ impl UpdatesApp {
     }
 
     pub(crate) fn scanning(&self) -> bool {
-        self.scan_rx.is_some()
+        self.scan.rx.is_some()
     }
 
     /// Looks for a newer Updateeer (same rhythm as the app search: startup, the chosen frequency,
     /// and every press of "Buscar actualizaciones").
     fn check_release(&mut self) {
-        if !self.settings.check_updates || self.release_rx.is_some() {
+        if !self.settings.check_updates || self.self_update.release_rx.is_some() {
             return;
         }
         let (tx, ctx) = (mpsc::channel(), self.ctx.clone());
@@ -268,56 +313,56 @@ impl UpdatesApp {
             let _ = sender.send(crate::selfupdate::latest());
             ctx.request_repaint();
         });
-        self.release_rx = Some(tx.1);
+        self.self_update.release_rx = Some(tx.1);
     }
 
     /// Downloads, verifies and installs the new package, then the new version takes over.
     pub(crate) fn start_self_update(&mut self) {
-        let Some(release) = self.new_release.clone().filter(|_| self.self_update_rx.is_none()) else { return };
-        self.self_update_error = None;
-        self.update_shown.set(0.0);
+        let Some(release) = self.self_update.new_release.clone().filter(|_| self.self_update.self_update_rx.is_none()) else { return };
+        self.self_update.self_update_error = None;
+        self.self_update.update_shown = 0.0;
         let (tx, ctx) = (mpsc::channel(), self.ctx.clone());
         let sender = tx.0;
         thread::spawn(move || {
             let _ = sender.send(crate::selfupdate::install(&release));
             ctx.request_repaint();
         });
-        self.self_update_rx = Some(tx.1);
+        self.self_update.self_update_rx = Some(tx.1);
     }
 
     /// Phase, percentage and bar of the running self-update. The bar eases toward its target so a
     /// fast download is still seen filling up.
-    pub(crate) fn update_progress(&self, ui: &mut Ui) {
+    pub(crate) fn update_progress(&mut self, ui: &mut Ui) {
         let (phase, target) = crate::selfupdate::progress();
         let dt = ui.input(|i| i.stable_dt).min(0.1);
-        let shown = self.update_shown.get() + (target - self.update_shown.get()) * (1.0 - (-dt * 5.0).exp());
-        self.update_shown.set(shown);
+        let shown = self.self_update.update_shown + (target - self.self_update.update_shown) * (1.0 - (-dt * 5.0).exp());
+        self.self_update.update_shown = shown;
         ui.horizontal(|ui| {
-            ui.label(RichText::new(phase).size(12.0).color(text_2()));
+            ui.label(RichText::new(phase).size(FONT_SIZE_TINY).color(text_2()));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.label(RichText::new(format!("{}%", (shown * 100.0).round())).monospace().size(12.0).color(accent_text()));
+                ui.label(RichText::new(format!("{}%", (shown * 100.0).round())).monospace().size(FONT_SIZE_TINY).color(accent_text()));
             });
         });
         widgets::progress_bar(ui, shown, 5.0);
     }
 
     fn poll_self_update(&mut self) {
-        let Some(rx) = &self.self_update_rx else { return };
+        let Some(rx) = &self.self_update.self_update_rx else { return };
         let Ok(result) = rx.try_recv() else { return };
-        self.self_update_rx = None;
+        self.self_update.self_update_rx = None;
         match result {
             // The new version is already running; this old one just leaves.
             Ok(()) => std::process::exit(0),
-            Err(e) => self.self_update_error = Some(e),
+            Err(e) => self.self_update.self_update_error = Some(e),
         }
     }
 
     fn poll_release(&mut self) {
-        let Some(rx) = &self.release_rx else { return };
+        let Some(rx) = &self.self_update.release_rx else { return };
         let Ok(result) = rx.try_recv() else { return };
-        self.release_rx = None;
+        self.self_update.release_rx = None;
         // A failed check (offline, rate limit) is silent: nothing to tell the user.
-        self.new_release = result.ok().filter(|r| crate::selfupdate::is_newer(env!("CARGO_PKG_VERSION"), &r.version) && crate::selfupdate::has_installer(r));
+        self.self_update.new_release = result.ok().filter(|r| crate::selfupdate::is_newer(env!("CARGO_PKG_VERSION"), &r.version) && crate::selfupdate::has_installer(r));
     }
 
     fn start_scan(&mut self) {
@@ -325,17 +370,17 @@ impl UpdatesApp {
         if self.scanning() || self.queue.is_busy() {
             return;
         }
-        self.tools = detect_tools();
-        self.last_scan = Instant::now();
+        self.setup.tools = detect_tools();
+        self.scan.last_scan = Instant::now();
         let (tx, rx) = mpsc::channel();
         let ctx = self.ctx.clone();
         thread::spawn(move || {
             let _ = tx.send(scan::scan());
             ctx.request_repaint();
         });
-        self.scan_rx = Some(rx);
-        self.scan_error = None;
-        self.scan_warning = None;
+        self.scan.rx = Some(rx);
+        self.scan.error = None;
+        self.scan.warning = None;
     }
 
     /// Auto-update: apps that are not running update on their own, open ones get a notification
@@ -434,13 +479,23 @@ impl UpdatesApp {
         }
     }
 
+    /// Show a system notification summarizing the batch that just finished.
+    fn notify_batch_summary(&mut self, done: usize, failed: usize) {
+        let title = if failed > 0 {
+            tf("{0} actualizadas, {1} fallidas", &[done.to_string(), failed.to_string()])
+        } else {
+            tf1("{0} actualizadas", &done.to_string())
+        };
+        self.notifier.notify(&title, t("Las actualizaciones han terminado"));
+    }
+
     fn poll_scan(&mut self) {
-        let Some(rx) = &self.scan_rx else { return };
+        let Some(rx) = &self.scan.rx else { return };
         let Ok(result) = rx.try_recv() else { return };
-        self.scan_rx = None;
+        self.scan.rx = None;
         match result {
             Ok((apps, warning)) => {
-                self.scan_warning = warning;
+                self.scan.warning = warning;
                 let (skipped, apps): (Vec<App>, Vec<App>) = apps.into_iter().partition(|a| self.skipped.get(&a.id) == Some(&a.to));
                 self.skipped_apps = skipped;
                 self.request_icons(&apps);
@@ -453,7 +508,7 @@ impl UpdatesApp {
                 let scheduled = std::mem::take(&mut self.sched_run);
                 self.auto_pass(scheduled);
             }
-            Err(e) => self.scan_error = Some(e),
+            Err(e) => self.scan.error = Some(e),
         }
     }
 
@@ -484,7 +539,7 @@ impl UpdatesApp {
 
     /// Indices into `apps` that pass the search and filters, in the chosen order.
     fn visible(&self) -> Vec<usize> {
-        let q = self.query.trim().to_lowercase();
+        let q = self.filter_state.query.trim().to_lowercase();
         let now = SystemTime::now();
         let days = |a: &App| a.installed_at.map(|t| model::days_ago(t, now));
         let mut rows: Vec<usize> = (0..self.apps.len())
@@ -492,14 +547,14 @@ impl UpdatesApp {
                 let a = &self.apps[i];
                 // System packages are tools unless they ship a launcher (a graphical app).
                 let tool = a.id.starts_with("formula:") || (matches!(a.source, Source::Apt | Source::Pacman | Source::Aur | Source::Dnf | Source::Zypper | Source::Apk | Source::Xbps) && !crate::linuxpkg::is_gui(&a.id));
-                (match self.filter {
+                (match self.filter_state.filter {
                     Filter::All => true,
                     Filter::Only(s) => a.source == s,
-                }) && (match self.kind {
+                }) && (match self.filter_state.kind {
                     Type::All => true,
                     Type::Apps => !tool,
                     Type::Tools => tool,
-                }) && (match self.age {
+                }) && (match self.filter_state.age {
                     Age::Any => true,
                     Age::Week => days(a).is_some_and(|d| d <= 7),
                     Age::Month => days(a).is_some_and(|d| d <= 30),
@@ -508,7 +563,7 @@ impl UpdatesApp {
             })
             .collect();
         // `apps` is already sorted by name; unknown dates always go last.
-        match self.sort {
+        match self.filter_state.sort {
             Sort::Name => {}
             Sort::Newest => rows.sort_by_key(|&i| (self.apps[i].installed_at.is_none(), std::cmp::Reverse(self.apps[i].installed_at))),
             Sort::Oldest => rows.sort_by_key(|&i| (self.apps[i].installed_at.is_none(), self.apps[i].installed_at)),
@@ -519,7 +574,7 @@ impl UpdatesApp {
     }
 
     fn filters_active(&self) -> bool {
-        (self.kind, self.age, self.sort) != (Type::All, Age::Any, Sort::Name)
+        (self.filter_state.kind, self.filter_state.age, self.filter_state.sort) != (Type::All, Age::Any, Sort::Name)
     }
 }
 
@@ -532,10 +587,10 @@ impl eframe::App for UpdatesApp {
         self.poll_scan();
         self.poll_release();
         self.poll_self_update();
-        if self.self_update_rx.is_some() {
+        self.poll_icons();
+        if self.self_update.self_update_rx.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(33));
         }
-        self.poll_icons();
         while let Ok((id, result)) = self.done_rx.try_recv() {
             let error = result.as_ref().err().cloned();
             if error.as_deref() == Some(t("Cancelaste la petición de contraseña")) {
@@ -562,7 +617,7 @@ impl eframe::App for UpdatesApp {
         }
         self.schedule_tick();
         if self.settings.auto || self.settings.auto_update || self.settings.schedule.is_some() {
-            if self.settings.auto && self.last_scan.elapsed() >= Duration::from_secs(self.settings.hours as u64 * 3600) {
+            if self.settings.auto && self.scan.last_scan.elapsed() >= Duration::from_secs(self.settings.hours as u64 * 3600) {
                 self.start_scan();
             }
             ctx.request_repaint_after(Duration::from_secs(60));
@@ -580,6 +635,13 @@ impl eframe::App for UpdatesApp {
             }
             ctx.request_repaint_after(Duration::from_millis(100));
         }
+        // Detect batch completion: queue was busy, now idle.
+        let busy = self.queue.is_busy();
+        if self.prev_batch_busy && !busy && self.queue.batch_summary().2 > 0 {
+            let (done, failed, _total) = self.queue.batch_summary();
+            self.notify_batch_summary(done, failed);
+        }
+        self.prev_batch_busy = busy;
         self.last_logic = Instant::now();
     }
 
@@ -596,20 +658,23 @@ impl eframe::App for UpdatesApp {
         // The user may have installed a tool in Terminal: look again when the window is focused.
         let focused = ui.input(|i| i.focused);
         if focused && !self.was_focused {
-            self.tools = detect_tools();
-            self.access = crate::permissions::app_management();
+            self.setup.tools = detect_tools();
+            self.setup.access = crate::permissions::app_management();
         }
         self.was_focused = focused;
         // Ask for «App Management» up front, not when the first update fails: open its pane once.
-        if cfg!(target_os = "macos") && !self.perm_prompted && self.access == crate::permissions::Access::Denied && matches!(self.page, Page::Welcome | Page::Updates) {
-            self.perm_prompted = true;
+        if cfg!(target_os = "macos") && !self.setup.perm_prompted && self.setup.access == crate::permissions::Access::Denied && matches!(self.page, Page::Welcome | Page::Updates) {
+            self.setup.perm_prompted = true;
             crate::permissions::open_settings();
         }
+        // Responsive sidebar: collapses to icons-only when window is narrow.
+        let narrow = ui.available_width() < 1000.0;
+        let sidebar_w = if narrow { NARROW_SIDEBAR_WIDTH } else { SIDEBAR_WIDTH };
         egui::Panel::left("nav")
-            .exact_size(236.0)
+            .exact_size(sidebar_w)
             .resizable(false)
             .frame(Frame::new().fill(panel()).inner_margin(Margin::symmetric(14, 16)))
-            .show(ui, |ui| self.sidebar(ui));
+            .show(ui, |ui| self.sidebar(ui, narrow));
         egui::CentralPanel::default()
             .frame(Frame::new().fill(bg()).inner_margin(Margin { left: 40, right: 40, top: 40, bottom: 28 }))
             .show(ui, |ui| match self.page {
@@ -631,20 +696,20 @@ impl UpdatesApp {
     fn menu_bar(&mut self) {
         let ctx = self.ctx.clone();
         // eframe shows the window after its first frames; hide it once that is done.
-        if let Some(n) = self.hide_in {
-            self.hide_in = n.checked_sub(1);
+        if let Some(n) = self.tray_state.hide_in {
+            self.tray_state.hide_in = n.checked_sub(1);
             if n == 0 {
                 native::set_hidden(&ctx, true);
             } else {
                 ctx.request_repaint();
             }
         }
-        let Some(tray) = self.tray.as_mut() else { return };
-        if ctx.input(|i| i.viewport().close_requested()) && !self.quitting {
+        let Some(tray) = self.tray_state.tray.as_mut() else { return };
+        if ctx.input(|i| i.viewport().close_requested()) && !self.tray_state.quitting {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             native::set_hidden(&ctx, true);
         }
-        tray.update(self.queue.available_count(), self.scan_rx.is_some());
+        tray.update(self.queue.available_count(), self.scan.rx.is_some());
         let mut actions = Vec::new();
         while let Ok(a) = tray.rx.try_recv() {
             actions.push(a);
@@ -655,9 +720,9 @@ impl UpdatesApp {
                     native::set_hidden(&ctx, false);
                 }
                 tray::Action::Scan => self.start_scan(),
-                tray::Action::Login => self.set_login(!self.login),
+                tray::Action::Login => self.set_login(!self.tray_state.login),
                 tray::Action::Quit => {
-                    self.quitting = true;
+                    self.tray_state.quitting = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             }
@@ -668,24 +733,26 @@ impl UpdatesApp {
     pub(crate) fn set_login(&mut self, on: bool) {
         match autostart::set(on) {
             Ok(()) => {
-                self.login = on;
-                self.login_error = None;
+                self.tray_state.login = on;
+                self.tray_state.login_error = None;
             }
-            Err(e) => self.login_error = Some(e),
+            Err(e) => self.tray_state.login_error = Some(e),
         }
-        if let Some(t) = &self.tray {
-            t.set_login(self.login);
+        if let Some(t) = &self.tray_state.tray {
+            t.set_login(self.tray_state.login);
         }
     }
 
-    fn sidebar(&mut self, ui: &mut Ui) {
+    fn sidebar(&mut self, ui: &mut Ui, narrow: bool) {
         ui.add_space(10.0);
-        ui.horizontal(|ui| {
-            ui.add_space(8.0);
-            widgets::logo(ui, 26.0);
-            ui.label(RichText::new("Updateeer").size(20.0).family(display()));
-        });
-        ui.add_space(22.0);
+        if !narrow {
+            ui.horizontal(|ui| {
+                ui.add_space(SPACING_SM);
+                widgets::logo(ui, 26.0);
+                ui.label(RichText::new("Updateeer").size(FONT_SIZE_TITLE).family(display()));
+            });
+            ui.add_space(SPACING_LG);
+        }
         ui.spacing_mut().item_spacing.y = 2.0;
         let badge = Some(self.queue.available_count());
         for (page, icon, label) in [
@@ -702,29 +769,30 @@ impl UpdatesApp {
             }
         }
         ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
-            Frame::new()
-                .fill(raised())
-                .stroke(Stroke::new(1.0, tint(15)))
-                .corner_radius(12)
-                .inner_margin(14)
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.spacing_mut().item_spacing.y = 4.0;
-                    // The parent layout is bottom-up, so the lines are added in reverse.
-                    let text = if self.settings.auto { tf1("Cada {0} h, con la app abierta", &self.settings.hours.to_string()) } else { t("Desactivada").into() };
-                    ui.label(RichText::new(text).size(12.0).color(faint()));
-                    ui.label(RichText::new(t("Búsqueda automática")).size(12.0).family(semibold()).color(text_2()));
-                });
-            ui.add_space(10.0);
+            if !narrow {
+                Frame::new()
+                    .fill(raised())
+                    .stroke(Stroke::new(1.0, tint(15)))
+                    .corner_radius(12)
+                    .inner_margin(14)
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.spacing_mut().item_spacing.y = SPACING_XS;
+                        let text = if self.settings.auto { tf1("Cada {0} h, con la app abierta", &self.settings.hours.to_string()) } else { t("Desactivada").into() };
+                        ui.label(RichText::new(text).size(FONT_SIZE_TINY).color(faint()));
+                        ui.label(RichText::new(t("Búsqueda automática")).size(FONT_SIZE_TINY).family(semibold()).color(text_2()));
+                    });
+                ui.add_space(10.0);
+            }
             ui.horizontal(|ui| {
                 ui.add_space(6.0);
-                ui.label(RichText::new(tf1("Versión {0}", env!("CARGO_PKG_VERSION"))).size(12.0).color(faint()));
+                ui.label(RichText::new(tf1("Versión {0}", env!("CARGO_PKG_VERSION"))).size(FONT_SIZE_TINY).color(faint()));
             });
-            if let Some(r) = &self.new_release {
+            if let Some(r) = &self.self_update.new_release {
                 ui.add_space(6.0);
                 let link = ui.horizontal(|ui| {
                     ui.add_space(6.0);
-                    ui.add(egui::Label::new(RichText::new(tf1("Nueva versión {0} disponible", &r.version.clone())).size(12.5).family(semibold()).color(accent_text())).sense(Sense::click()))
+                    ui.add(egui::Label::new(RichText::new(tf1("Nueva versión {0} disponible", &r.version.clone())).size(FONT_SIZE_MICRO).family(semibold()).color(accent_text())).sense(Sense::click()))
                 });
                 let can_install = crate::selfupdate::can_self_install();
                 let hint = if can_install { t("Ver en Ajustes") } else { t("Abrir la página de descarga") };
@@ -749,7 +817,7 @@ impl UpdatesApp {
             .sum();
         let mut summary = if self.scanning() {
             t("Buscando actualizaciones…").to_string()
-        } else if let Some(e) = &self.scan_error {
+        } else if let Some(e) = &self.scan.error {
             tf1("No se pudo buscar: {0}", &e.to_string())
         } else if available > 0 {
             let size = if total_mb > 0 { format!(" · {}", model::format_size(Some(total_mb))) } else { String::new() };
@@ -758,12 +826,12 @@ impl UpdatesApp {
             t("Actualizando…").to_string()
         } else if self.queue.failed_count() > 0 {
             tf1("{0} fallidas", &self.queue.failed_count().to_string())
-        } else if self.scan_warning.is_some() {
+        } else if self.scan.warning.is_some() {
             t("Revisión incompleta").to_string()
         } else {
             t("Todo al día").to_string()
         };
-        if let (Some(w), false) = (&self.scan_warning, self.scanning()) {
+        if let (Some(w), false) = (&self.scan.warning, self.scanning()) {
             summary = format!("{summary} · {w}");
         }
         // No actions while a scan runs: its result replaces the queue.
@@ -772,37 +840,37 @@ impl UpdatesApp {
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = 6.0;
-                ui.label(RichText::new(t("Actualizaciones")).size(36.0).family(display()));
-                ui.label(RichText::new(summary).size(14.0).color(muted()));
+                ui.label(RichText::new(t("Actualizaciones")).size(FONT_SIZE_DISPLAY).family(display()));
+                ui.label(RichText::new(summary).size(FONT_SIZE_BODY).color(muted()));
             });
             ui.with_layout(Layout::right_to_left(Align::Max), |ui| {
                 ui.spacing_mut().item_spacing.x = 16.0;
-                if widgets::button(ui, Some(Icon::Download), t("Actualizar todo"), Kind::Primary, 44.0, available > 0 && can_act).clicked() {
+                if widgets::button(ui, Some(Icon::Download), t("Actualizar todo"), Kind::Primary, BUTTON_HEIGHT_LG, available > 0 && can_act).clicked() {
                     let ids: Vec<String> = self.queue.available().map(String::from).collect();
                     self.queue.enqueue(ids.iter().map(String::as_str));
                     self.selected.clear();
                 }
                 let idle = !self.scanning() && !self.queue.is_busy();
                 let (ic, label) = if self.scanning() { (Icon::Busy, t("Buscando…")) } else { (Icon::Refresh, t("Buscar actualizaciones")) };
-                if widgets::button(ui, Some(ic), label, Kind::Ghost, 44.0, idle).clicked() {
+                if widgets::button(ui, Some(ic), label, Kind::Ghost, BUTTON_HEIGHT_LG, idle).clicked() {
                     self.start_scan();
                 }
             });
         });
-        ui.add_space(22.0);
+        ui.add_space(SPACING_LG);
 
         if self.queue.is_busy() {
             self.batch_banner(ui);
-            ui.add_space(22.0);
+            ui.add_space(SPACING_LG);
         }
         if self.permission_banner(ui) {
-            ui.add_space(22.0);
+            ui.add_space(SPACING_LG);
         }
         if self.setup_banner(ui) {
-            ui.add_space(22.0);
+            ui.add_space(SPACING_LG);
         }
         if self.release_banner(ui) {
-            ui.add_space(22.0);
+            ui.add_space(SPACING_LG);
         }
 
         ui.horizontal(|ui| {
@@ -816,28 +884,28 @@ impl UpdatesApp {
                         ui.spacing_mut().item_spacing.x = 4.0;
                         ui.horizontal(|ui| {
                             for (label, f) in source_filters() {
-                                if segment(ui, label, self.filter == f).clicked() {
-                                    self.filter = f;
+                                if segment(ui, label, self.filter_state.filter == f).clicked() {
+                                    self.filter_state.filter = f;
                                 }
                             }
                         });
                     });
-                search_field(ui, &mut self.query);
+                search_field(ui, &mut self.filter_state.query);
             });
         });
-        ui.add_space(12.0);
+        ui.add_space(SPACING_MD);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 10.0;
-            combo(ui, t("Tipo"), &mut self.kind, &[(Type::All, t("Todo")), (Type::Apps, t("Apps")), (Type::Tools, t("Herramientas"))]);
-            ui.add_space(8.0);
-            combo(ui, t("Instalada"), &mut self.age, &[(Age::Any, t("Cualquiera")), (Age::Week, t("Últimos 7 días")), (Age::Month, t("Últimos 30 días")), (Age::Old, t("Hace más de 3 meses"))]);
-            ui.add_space(8.0);
-            combo(ui, t("Orden"), &mut self.sort, &[(Sort::Name, t("Nombre")), (Sort::Newest, t("Más recientes")), (Sort::Oldest, t("Más antiguas"))]);
-            if self.filters_active() && widgets::button(ui, None, t("Limpiar"), Kind::Soft, 34.0, true).clicked() {
-                (self.kind, self.age, self.sort) = (Type::All, Age::Any, Sort::Name);
+            combo(ui, t("Tipo"), &mut self.filter_state.kind, &[(Type::All, t("Todo")), (Type::Apps, t("Apps")), (Type::Tools, t("Herramientas"))]);
+            ui.add_space(SPACING_SM);
+            combo(ui, t("Instalada"), &mut self.filter_state.age, &[(Age::Any, t("Cualquiera")), (Age::Week, t("Últimos 7 días")), (Age::Month, t("Últimos 30 días")), (Age::Old, t("Hace más de 3 meses"))]);
+            ui.add_space(SPACING_SM);
+            combo(ui, t("Orden"), &mut self.filter_state.sort, &[(Sort::Name, t("Nombre")), (Sort::Newest, t("Más recientes")), (Sort::Oldest, t("Más antiguas"))]);
+            if self.filters_active() && widgets::button(ui, None, t("Limpiar"), Kind::Soft, BUTTON_HEIGHT_SM, true).clicked() {
+                (self.filter_state.kind, self.filter_state.age, self.filter_state.sort) = (Type::All, Age::Any, Sort::Name);
             }
         });
-        ui.add_space(22.0);
+        ui.add_space(SPACING_LG);
 
         let rows = self.visible();
         let visible_ids: Vec<String> = rows
@@ -861,7 +929,7 @@ impl UpdatesApp {
                 let all_on = !visible_ids.is_empty() && n == visible_ids.len();
                 let (head, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 52.0), Sense::hover());
                 ui.painter().hline(head.x_range(), head.bottom() - 0.5, Stroke::new(1.0, line()));
-                let mut inner = ui.new_child(UiBuilder::new().max_rect(head.shrink2(Vec2::new(18.0, 0.0))).layout(Layout::left_to_right(Align::Center)));
+                let mut inner = ui.new_child(UiBuilder::new().max_rect(head.shrink2(Vec2::new(ROW_PADDING_X, 0.0))).layout(Layout::left_to_right(Align::Center)));
                 let mut on = all_on;
                 if inner.add_enabled(!visible_ids.is_empty(), Checkbox::new(&mut on, "")).changed() {
                     for id in &visible_ids {
@@ -873,9 +941,9 @@ impl UpdatesApp {
                     1 => t("1 seleccionada").to_string(),
                     n => tf1("{0} seleccionadas", &n.to_string()),
                 };
-                inner.label(RichText::new(label).size(13.0).family(semibold()).color(text_2()));
+                inner.label(RichText::new(label).size(FONT_SIZE_SMALL).family(semibold()).color(text_2()));
                 inner.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if widgets::button(ui, None, t("Actualizar seleccionadas"), Kind::Primary, 34.0, n > 0 && can_act).clicked() {
+                    if widgets::button(ui, None, t("Actualizar seleccionadas"), Kind::Primary, BUTTON_HEIGHT_SM, n > 0 && can_act).clicked() {
                         to_update.extend(visible_ids.iter().filter(|id| self.selected.contains(*id)).cloned());
                     }
                 });
@@ -887,7 +955,7 @@ impl UpdatesApp {
                     if rows.is_empty() {
                         ui.add_space(64.0);
                         ui.vertical_centered(|ui| {
-                            let (msg, color) = match (&self.scan_error, self.scanning(), self.apps.is_empty()) {
+                            let (msg, color) = match (&self.scan.error, self.scanning(), self.apps.is_empty()) {
                                 (Some(e), false, _) => (tf1("No se pudo buscar: {0}", &e.to_string()), muted()),
                                 (_, true, _) => (t("Buscando…").into(), faint()),
                                 (_, _, true) => (t("No hay actualizaciones.").into(), faint()),
@@ -927,15 +995,15 @@ impl UpdatesApp {
     }
 
     fn poll_mas_install(&mut self) {
-        let Some(rx) = &self.mas_install else { return };
+        let Some(rx) = &self.setup.mas_install else { return };
         let Ok(result) = rx.try_recv() else { return };
-        self.mas_install = None;
+        self.setup.mas_install = None;
         match result {
             Ok(()) => {
-                self.tools = detect_tools();
+                self.setup.tools = detect_tools();
                 self.start_scan();
             }
-            Err(e) => self.setup_error = Some(e),
+            Err(e) => self.setup.setup_error = Some(e),
         }
     }
 
@@ -943,47 +1011,47 @@ impl UpdatesApp {
     /// Returns whether it drew anything.
     /// A newer Updateeer exists: install it (or open the download), with its release notes.
     fn release_banner(&mut self, ui: &mut Ui) -> bool {
-        let Some(release) = self.new_release.clone() else { return false };
+        let Some(release) = self.self_update.new_release.clone() else { return false };
         let can_install = crate::selfupdate::can_self_install();
-        let installing = self.self_update_rx.is_some();
+        let installing = self.self_update.self_update_rx.is_some();
         let (mut act, mut notes) = (false, false);
         Frame::new()
             .fill(banner_bg())
             .stroke(Stroke::new(1.0, Color32::from_rgba_unmultiplied(0xFF, 0x8A, 0x2A, 77)))
-            .corner_radius(14)
-            .inner_margin(Margin::symmetric(18, 16))
+            .corner_radius(BANNER_CORNER_RADIUS)
+            .inner_margin(Margin::symmetric(BANNER_INNER_MARGIN_X, BANNER_INNER_MARGIN_Y))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 12.0;
+                    ui.spacing_mut().item_spacing.x = SPACING_MD;
                     ui.vertical(|ui| {
                         ui.set_width(ui.available_width() - 320.0);
-                        ui.spacing_mut().item_spacing.y = 4.0;
-                        ui.label(RichText::new(tf1("Updateeer {0} está disponible", &release.version.clone())).size(14.0).family(semibold()));
-                        let detail = match (&self.self_update_error, installing, can_install) {
+                        ui.spacing_mut().item_spacing.y = SPACING_XS;
+                        ui.label(RichText::new(tf1("Updateeer {0} está disponible", &release.version.clone())).size(FONT_SIZE_BODY).family(semibold()));
+                        let detail = match (&self.self_update.self_update_error, installing, can_install) {
                             (Some(e), _, _) => tf1("No se pudo actualizar: {0}", &e.to_string()),
                             (_, true, _) => t("La app se reiniciará sola al terminar.").to_string(),
                             (_, _, true) => tf1("Tienes la {0}. Se descarga, se verifica y la app se reinicia sola.", env!("CARGO_PKG_VERSION")),
                             _ => tf1("Tienes la {0}. Descárgala desde la página de la versión.", env!("CARGO_PKG_VERSION")),
                         };
-                        ui.label(RichText::new(detail).size(13.0).color(muted()));
-                        if installing && self.self_update_error.is_none() {
-                            ui.add_space(4.0);
+                        ui.label(RichText::new(detail).size(FONT_SIZE_SMALL).color(muted()));
+                        if installing && self.self_update.self_update_error.is_none() {
+                            ui.add_space(SPACING_XS);
                             self.update_progress(ui);
                         }
                     });
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         let label = if can_install { t("Instalar y reiniciar") } else { t("Descargar") };
-                        act = widgets::button(ui, Some(Icon::Download), label, Kind::Primary, 36.0, !installing).clicked();
-                        notes = widgets::button(ui, None, if self.show_notes { t("Ocultar novedades") } else { t("Novedades") }, Kind::Soft, 36.0, true).clicked();
+                        act = widgets::button(ui, Some(Icon::Download), label, Kind::Primary, BUTTON_HEIGHT_MD, !installing).clicked();
+                        notes = widgets::button(ui, None, if self.self_update.show_notes { t("Ocultar novedades") } else { t("Novedades") }, Kind::Soft, BUTTON_HEIGHT_MD, true).clicked();
                     });
                 });
-                if self.show_notes {
-                    ui.add_space(8.0);
-                    ui.label(RichText::new(crate::selfupdate::summary(&release.notes)).size(13.0).color(muted()));
+                if self.self_update.show_notes {
+                    ui.add_space(SPACING_SM);
+                    ui.label(RichText::new(crate::selfupdate::summary(&release.notes)).size(FONT_SIZE_SMALL).color(muted()));
                 }
             });
         if notes {
-            self.show_notes = !self.show_notes;
+            self.self_update.show_notes = !self.self_update.show_notes;
         }
         if act {
             if can_install {
@@ -997,26 +1065,26 @@ impl UpdatesApp {
 
     /// macOS blocks changes to other apps until «App Management» is on: say so before updating.
     fn permission_banner(&mut self, ui: &mut Ui) -> bool {
-        if !cfg!(target_os = "macos") || self.access != crate::permissions::Access::Denied {
+        if !cfg!(target_os = "macos") || self.setup.access != crate::permissions::Access::Denied {
             return false;
         }
         let mut open = false;
         Frame::new()
             .fill(banner_bg())
             .stroke(Stroke::new(1.0, Color32::from_rgba_unmultiplied(0xFF, 0x8A, 0x2A, 77)))
-            .corner_radius(14)
-            .inner_margin(Margin::symmetric(18, 16))
+            .corner_radius(BANNER_CORNER_RADIUS)
+            .inner_margin(Margin::symmetric(BANNER_INNER_MARGIN_X, BANNER_INNER_MARGIN_Y))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 12.0;
+                    ui.spacing_mut().item_spacing.x = SPACING_MD;
                     ui.vertical(|ui| {
                         ui.set_width(ui.available_width() - 200.0);
-                        ui.spacing_mut().item_spacing.y = 4.0;
-                        ui.label(RichText::new(t("Falta el permiso «Gestión de apps»")).size(14.0).family(semibold()));
-                        ui.label(RichText::new(t("macOS lo pide para que Updateeer pueda actualizar tus apps. Actívalo ahora en Ajustes del Sistema → Privacidad y seguridad → Gestión de apps.")).size(13.0).color(muted()));
+                        ui.spacing_mut().item_spacing.y = SPACING_XS;
+                        ui.label(RichText::new(t("Falta el permiso «Gestión de apps»")).size(FONT_SIZE_BODY).family(semibold()));
+                        ui.label(RichText::new(t("macOS lo pide para que Updateeer pueda actualizar tus apps. Actívalo ahora en Ajustes del Sistema → Privacidad y seguridad → Gestión de apps.")).size(FONT_SIZE_SMALL).color(muted()));
                     });
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        open = widgets::button(ui, None, t("Abrir ajustes"), Kind::Primary, 36.0, true).clicked();
+                        open = widgets::button(ui, None, t("Abrir ajustes"), Kind::Primary, BUTTON_HEIGHT_MD, true).clicked();
                     });
                 });
             });
@@ -1027,11 +1095,11 @@ impl UpdatesApp {
     }
 
     fn setup_banner(&mut self, ui: &mut Ui) -> bool {
-        let (brew, mas) = self.tools;
+        let (brew, mas) = self.setup.tools;
         if !cfg!(target_os = "macos") || self.settings.hide_setup || (brew && mas) {
             return false;
         }
-        let installing = self.mas_install.is_some();
+        let installing = self.setup.mas_install.is_some();
         let (title, text, action) = if !brew {
             (
                 t("Falta Homebrew"),
@@ -1050,22 +1118,22 @@ impl UpdatesApp {
         Frame::new()
             .fill(banner_bg())
             .stroke(Stroke::new(1.0, Color32::from_rgba_unmultiplied(0xFF, 0x8A, 0x2A, 77)))
-            .corner_radius(14)
-            .inner_margin(Margin::symmetric(18, 16))
+            .corner_radius(BANNER_CORNER_RADIUS)
+            .inner_margin(Margin::symmetric(BANNER_INNER_MARGIN_X, BANNER_INNER_MARGIN_Y))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 12.0;
+                    ui.spacing_mut().item_spacing.x = SPACING_MD;
                     ui.vertical(|ui| {
                         ui.set_width(ui.available_width() - 300.0);
-                        ui.spacing_mut().item_spacing.y = 4.0;
-                        ui.label(RichText::new(title).size(14.0).family(semibold()));
-                        let detail = self.setup_error.clone().unwrap_or_else(|| text.to_string());
-                        ui.label(RichText::new(detail).size(13.0).color(muted()));
+                        ui.spacing_mut().item_spacing.y = SPACING_XS;
+                        ui.label(RichText::new(title).size(FONT_SIZE_BODY).family(semibold()));
+                        let detail = self.setup.setup_error.clone().unwrap_or_else(|| text.to_string());
+                        ui.label(RichText::new(detail).size(FONT_SIZE_SMALL).color(muted()));
                     });
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         let label = if installing { t("Instalando…") } else { action };
-                        install = widgets::button(ui, None, label, Kind::Primary, 36.0, !installing).clicked();
-                        dismiss = widgets::button(ui, None, t("Ahora no"), Kind::Soft, 36.0, !installing).clicked();
+                        install = widgets::button(ui, None, label, Kind::Primary, BUTTON_HEIGHT_MD, !installing).clicked();
+                        dismiss = widgets::button(ui, None, t("Ahora no"), Kind::Soft, BUTTON_HEIGHT_MD, !installing).clicked();
                     });
                 });
             });
@@ -1081,14 +1149,14 @@ impl UpdatesApp {
 
     /// Opens the Homebrew installer, or installs `mas` once Homebrew is there.
     pub(crate) fn mas_install_running(&self) -> bool {
-        self.mas_install.is_some()
+        self.setup.mas_install.is_some()
     }
 
     pub(crate) fn install_tool(&mut self, brew_installed: bool) {
-        self.setup_error = None;
+        self.setup.setup_error = None;
         if !brew_installed {
             if let Err(e) = setup::open_homebrew_installer() {
-                self.setup_error = Some(e);
+                self.setup.setup_error = Some(e);
             }
         } else {
             let (tx, ctx) = (mpsc::channel(), self.ctx.clone());
@@ -1097,7 +1165,7 @@ impl UpdatesApp {
                 let _ = sender.send(setup::install_mas());
                 ctx.request_repaint();
             });
-            self.mas_install = Some(tx.1);
+            self.setup.mas_install = Some(tx.1);
         }
     }
 
@@ -1106,8 +1174,8 @@ impl UpdatesApp {
         Frame::new()
             .fill(banner_bg())
             .stroke(Stroke::new(1.0, Color32::from_rgba_unmultiplied(0xFF, 0x8A, 0x2A, 77)))
-            .corner_radius(14)
-            .inner_margin(Margin::symmetric(18, 16))
+            .corner_radius(BANNER_CORNER_RADIUS)
+            .inner_margin(Margin::symmetric(BANNER_INNER_MARGIN_X, BANNER_INNER_MARGIN_Y))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 18.0;
@@ -1115,16 +1183,16 @@ impl UpdatesApp {
                     ui.painter().circle_filled(dot.center(), 5.0, ACCENT);
                     ui.vertical(|ui| {
                         ui.set_width(ui.available_width() - 110.0);
-                        ui.spacing_mut().item_spacing.y = 8.0;
+                        ui.spacing_mut().item_spacing.y = SPACING_SM;
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new(tf("Actualizadas {0} de {1}", &[done.to_string(), total.to_string()])).size(14.0).family(semibold()));
+                            ui.label(RichText::new(tf("Actualizadas {0} de {1}", &[done.to_string(), total.to_string()])).size(FONT_SIZE_BODY).family(semibold()));
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                 ui.label(RichText::new(format!("{}%", pct.round())).monospace().color(accent_text()));
                             });
                         });
                         widgets::progress_bar(ui, pct / 100.0, 6.0);
                     });
-                    if widgets::button(ui, None, t("Cancelar"), Kind::Soft, 36.0, true).clicked() {
+                    if widgets::button(ui, None, t("Cancelar"), Kind::Soft, BUTTON_HEIGHT_MD, true).clicked() {
                         self.queue.cancel();
                         scan::cancel_running();
                     }
@@ -1146,7 +1214,7 @@ fn local_day_hour() -> Option<(u32, u32)> {
 }
 
 pub(crate) fn combo<T: PartialEq + Copy>(ui: &mut Ui, caption: &str, value: &mut T, options: &[(T, &str)]) {
-    ui.label(RichText::new(caption).size(12.5).color(faint()));
+    ui.label(RichText::new(caption).size(FONT_SIZE_MICRO).color(faint()));
     let current = options.iter().find(|o| o.0 == *value).map_or("", |o| o.1);
     egui::ComboBox::from_id_salt(caption).selected_text(current).width(150.0).show_ui(ui, |ui| {
         for (v, label) in options {
@@ -1159,7 +1227,7 @@ pub(crate) fn combo<T: PartialEq + Copy>(ui: &mut Ui, caption: &str, value: &mut
 pub(crate) fn search_field(ui: &mut Ui, query: &mut String) {
     let field = ui.add(
         TextEdit::singleline(query)
-            .font(FontId::proportional(14.0))
+            .font(FontId::proportional(FONT_SIZE_BODY))
             .hint_text(t("Buscar app…"))
             .desired_width(ui.available_width())
             .margin(Margin { left: 40, right: 14, top: 12, bottom: 13 }),
@@ -1174,8 +1242,8 @@ pub(crate) fn search_field(ui: &mut Ui, query: &mut String) {
 
 pub(crate) fn segment(ui: &mut Ui, label: &str, on: bool) -> egui::Response {
     let color = if on { text() } else { faint() };
-    let galley = ui.painter().layout_no_wrap(label.into(), FontId::new(13.0, semibold()), color);
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(galley.size().x + 28.0, 34.0), Sense::click());
+    let galley = ui.painter().layout_no_wrap(label.into(), FontId::new(FONT_SIZE_SMALL, semibold()), color);
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(galley.size().x + 28.0, SEGMENT_HEIGHT), Sense::click());
     if on {
         ui.painter().rect_filled(rect, CornerRadius::same(8), segment_on());
     }
@@ -1201,27 +1269,27 @@ struct Cols {
 
 impl Cols {
     fn of(rect: Rect) -> Self {
-        let (left, right) = (rect.left() + 18.0, rect.right() - 18.0);
-        let action_x = right - 150.0;
-        let size_x = action_x - 14.0 - 64.0;
-        let chip_x = size_x - 14.0 - 86.0;
+        let (left, right) = (rect.left() + ROW_PADDING_X, rect.right() - ROW_PADDING_X);
+        let action_x = right - ROW_ACTION_WIDTH;
+        let size_x = action_x - ROW_VERSION_GAP - ROW_SIZE_WIDTH;
+        let chip_x = size_x - ROW_VERSION_GAP - ROW_CHIP_WIDTH;
         Self { left, right, chip_x, size_x, action_x }
     }
 }
 
 /// Titles above the columns of the updates table, aligned with `row_inner`.
 fn column_titles(ui: &mut Ui) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 34.0), Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), COLUMN_TITLES_HEIGHT), Sense::hover());
     ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, line()));
     let Cols { left, chip_x, size_x, .. } = Cols::of(rect);
     let (ltr, rtl) = (Layout::left_to_right(Align::Center), Layout::right_to_left(Align::Center));
     let title = |ui: &mut Ui, text: &str| {
-        ui.label(RichText::new(text).size(12.0).family(semibold()).color(faint()));
+        ui.label(RichText::new(text).size(FONT_SIZE_TINY).family(semibold()).color(faint()));
     };
-    cell(ui, rect, left + 86.0, left + 296.0, ltr, |ui| title(ui, t("App")));
-    cell(ui, rect, left + 310.0, chip_x - 14.0, ltr, |ui| title(ui, t("Versión")));
-    cell(ui, rect, chip_x, chip_x + 86.0, ltr, |ui| title(ui, t("Origen")));
-    cell(ui, rect, size_x - 20.0, size_x + 64.0, rtl, |ui| title(ui, t("Instalada")));
+    cell(ui, rect, left + ROW_NAME_START, left + ROW_NAME_END, ltr, |ui| title(ui, t("App")));
+    cell(ui, rect, left + ROW_VERSION_START, chip_x - ROW_VERSION_GAP, ltr, |ui| title(ui, t("Versión")));
+    cell(ui, rect, chip_x, chip_x + ROW_CHIP_WIDTH, ltr, |ui| title(ui, t("Origen")));
+    cell(ui, rect, size_x - 20.0, size_x + ROW_SIZE_WIDTH, rtl, |ui| title(ui, t("Instalada")));
 }
 
 /// One 68px row. Returns (its own "Actualizar"/"Reintentar" was clicked, the row body was clicked).
@@ -1231,7 +1299,7 @@ fn row(ui: &mut Ui, app: &App, status: Status, error: Option<&str>, selected: &m
 }
 
 fn row_inner(ui: &mut Ui, app: &App, status: Status, error: Option<&str>, selected: &mut bool, enabled: bool, icon: Option<&egui::TextureHandle>) -> (bool, bool) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 68.0), Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_HEIGHT), Sense::hover());
     // Not `resp.hovered()`: that goes false while the pointer is over the row's own buttons.
     if ui.rect_contains_pointer(rect) {
         ui.painter().rect_filled(rect, 0, tint(6));
@@ -1242,14 +1310,14 @@ fn row_inner(ui: &mut Ui, app: &App, status: Status, error: Option<&str>, select
     let rtl = Layout::right_to_left(Align::Center);
     let mut clicked = false;
     // Registered before the cells so the checkbox and buttons drawn over it win their own clicks.
-    let body = Rect::from_min_max(Pos2::new(left + 32.0, rect.top()), Pos2::new(chip_x + 86.0, rect.bottom()));
+    let body = Rect::from_min_max(Pos2::new(left + ROW_ICON_START, rect.top()), Pos2::new(chip_x + ROW_CHIP_WIDTH, rect.bottom()));
     let shown = ui.interact(body, ui.make_persistent_id("open"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
 
-    cell(ui, rect, left, left + 18.0, ltr, |ui| {
+    cell(ui, rect, left, left + ROW_CHECKBOX_END, ltr, |ui| {
         ui.add_enabled(status == Status::Available, Checkbox::new(selected, ""));
     });
-    cell(ui, rect, left + 32.0, left + 72.0, ltr, |ui| widgets::tile(ui, app, icon));
-    cell(ui, rect, left + 86.0, left + 296.0, Layout::top_down(Align::Min), |ui| {
+    cell(ui, rect, left + ROW_ICON_START, left + ROW_ICON_END, ltr, |ui| widgets::tile(ui, app, icon));
+    cell(ui, rect, left + ROW_NAME_START, left + ROW_NAME_END, Layout::top_down(Align::Min), |ui| {
         ui.add_space(15.0);
         ui.spacing_mut().item_spacing.y = 3.0;
         ui.add(egui::Label::new(RichText::new(&app.name).size(14.5).family(semibold())).truncate());
@@ -1257,66 +1325,66 @@ fn row_inner(ui: &mut Ui, app: &App, status: Status, error: Option<&str>, select
         match (status, error) {
             (Status::Failed, Some(e)) => {
                 let first = e.lines().find(|l| !l.trim().is_empty()).unwrap_or(e);
-                ui.add(egui::Label::new(RichText::new(tf1("Falló: {0}", first)).size(12.5).color(Color32::from_rgb(0xFF, 0x7A, 0x6B))).truncate()).on_hover_text(e);
+                ui.add(egui::Label::new(RichText::new(tf1("Falló: {0}", first)).size(FONT_SIZE_MICRO).color(Color32::from_rgb(0xFF, 0x7A, 0x6B))).truncate()).on_hover_text(e);
             }
             _ => {
-                ui.add(egui::Label::new(RichText::new(&app.vendor).size(12.5).color(faint())).truncate());
+                ui.add(egui::Label::new(RichText::new(&app.vendor).size(FONT_SIZE_MICRO).color(faint())).truncate());
             }
         }
     });
 
-    let (vx0, vx1) = (left + 310.0, chip_x - 14.0);
+    let (vx0, vx1) = (left + ROW_VERSION_START, chip_x - ROW_VERSION_GAP);
     // Two versions and an arrow share this cell: 8px gaps, 14px arrow, ~8px per mono char.
     let max_chars = (((vx1 - vx0 - 30.0) / 2.0) / 8.0).max(6.0) as usize;
     cell(ui, rect, vx0, vx1, ltr, |ui| {
-        ui.spacing_mut().item_spacing.x = 8.0;
-        ui.label(RichText::new(widgets::short_version(&app.from, max_chars)).monospace().size(13.0).color(faint())).on_hover_text(&app.from);
+        ui.spacing_mut().item_spacing.x = SPACING_SM;
+        ui.label(RichText::new(widgets::short_version(&app.from, max_chars)).monospace().size(FONT_SIZE_SMALL).color(faint())).on_hover_text(&app.from);
         let (r, _) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
         widgets::icon(ui, r, Icon::Arrow, faint(), 2.2);
-        ui.label(RichText::new(widgets::short_version(&app.to, max_chars)).monospace().size(13.0).color(accent_text())).on_hover_text(&app.to);
+        ui.label(RichText::new(widgets::short_version(&app.to, max_chars)).monospace().size(FONT_SIZE_SMALL).color(accent_text())).on_hover_text(&app.to);
     });
-    cell(ui, rect, chip_x, chip_x + 86.0, ltr, |ui| widgets::chip(ui, app.source.label()));
-    cell(ui, rect, size_x, size_x + 64.0, rtl, |ui| {
+    cell(ui, rect, chip_x, chip_x + ROW_CHIP_WIDTH, ltr, |ui| widgets::chip(ui, app.source.label()));
+    cell(ui, rect, size_x, size_x + ROW_SIZE_WIDTH, rtl, |ui| {
         // Download size when known, else how long ago this version was installed.
         match (app.size_mb, app.installed_at) {
             (None, Some(t)) => {
                 let short = model::ago_short(t, SystemTime::now());
-                ui.label(RichText::new(short).monospace().size(12.5).color(faint())).on_hover_text(tf1("Instalada el {0}", &model::date(t)));
+                ui.label(RichText::new(short).monospace().size(FONT_SIZE_MICRO).color(faint())).on_hover_text(tf1("Instalada el {0}", &model::date(t)));
             }
             _ => {
-                ui.label(RichText::new(model::format_size(app.size_mb)).monospace().size(12.5).color(faint()));
+                ui.label(RichText::new(model::format_size(app.size_mb)).monospace().size(FONT_SIZE_MICRO).color(faint()));
             }
         }
     });
     cell(ui, rect, action_x, right, rtl, |ui| match status {
-        Status::Available => clicked = widgets::button(ui, None, t("Actualizar"), Kind::Soft, 34.0, enabled).clicked(),
+        Status::Available => clicked = widgets::button(ui, None, t("Actualizar"), Kind::Soft, BUTTON_HEIGHT_SM, enabled).clicked(),
         Status::Failed => {
             let tip = error.unwrap_or(t("Error desconocido")).to_string();
-            clicked = widgets::button(ui, None, t("Reintentar"), Kind::Soft, 34.0, enabled).on_hover_text(tip).clicked();
+            clicked = widgets::button(ui, None, t("Reintentar"), Kind::Soft, BUTTON_HEIGHT_SM, enabled).on_hover_text(tip).clicked();
         }
         Status::Queued => {
-            ui.label(RichText::new(t("En cola")).size(13.0).color(faint()));
+            ui.label(RichText::new(t("En cola")).size(FONT_SIZE_SMALL).color(faint()));
             let (r, _) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
             widgets::icon(ui, r, Icon::Clock, faint(), 2.2);
         }
         Status::Updating(p) => {
             ui.vertical(|ui| {
-                ui.set_width(150.0);
+                ui.set_width(ROW_ACTION_WIDTH);
                 // Content is ~26px tall in a 68px row: push it to the vertical center.
                 ui.add_space(21.0);
                 ui.spacing_mut().item_spacing.y = 6.0;
                 ui.horizontal(|ui| {
                     let phase = if p < 70.0 { t("Descargando") } else { t("Instalando") };
-                    ui.label(RichText::new(phase).size(12.0).color(text_2()));
+                    ui.label(RichText::new(phase).size(FONT_SIZE_TINY).color(text_2()));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        ui.label(RichText::new(format!("{}%", p.round())).monospace().size(12.0).color(accent_text()));
+                        ui.label(RichText::new(format!("{}%", p.round())).monospace().size(FONT_SIZE_TINY).color(accent_text()));
                     });
                 });
                 widgets::progress_bar(ui, p / 100.0, 5.0);
             });
         }
         Status::Done => {
-            ui.label(RichText::new(t("Actualizada")).size(13.0).family(semibold()).color(ok()));
+            ui.label(RichText::new(t("Actualizada")).size(FONT_SIZE_SMALL).family(semibold()).color(ok()));
             let (r, _) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::hover());
             widgets::icon(ui, r, Icon::Check, ok(), 2.6);
         }

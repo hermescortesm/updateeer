@@ -28,6 +28,7 @@ pub fn path(kind: &str) -> Option<PathBuf> {
         // AUR packages are the foreign ones of pacman; the helper is only needed to update them.
         "aur" => "pacman",
         "xbps" => "xbps-install",
+        "guix" => "guix-package",
         k => k,
     })
 }
@@ -150,7 +151,7 @@ fn polish(mut a: App) -> App {
         (None, Some((n, _, _))) => friendly::tidy(n),
         (None, None) => friendly::display(id),
     };
-    let generic = ["", "pacman", "AUR", "apt", "dnf", "zypper", "apk", "xbps", "snap", "Flatpak"].contains(&a.vendor.as_str()) || own;
+    let generic = ["", "pacman", "AUR", "apt", "dnf", "zypper", "apk", "xbps", "snap", "Flatpak", "Nix", "Guix"].contains(&a.vendor.as_str()) || own;
     let desc = known.map(|(_, d)| d).or_else(|| meta.as_ref().and_then(|(_, c, _)| friendly::describe(c)));
     if let Some(d) = desc {
         a.vendor = d.to_string();
@@ -522,6 +523,8 @@ fn outdated_raw(kind: &str) -> Result<Vec<App>, String> {
             let old = exec("snap", &["list"], SCAN_TIMEOUT)?;
             parse_snap_refresh(&new, &old)
         }
+        "nix" => parse_nix_upgrades(&exec("nix", &["upgrade", "--list", "--no-flake"], SCAN_TIMEOUT)?),
+        "guix" => parse_guix_upgrades(&exec("guix", &["package", "--list-upgrades"], SCAN_TIMEOUT)?),
         _ => return Err(format!("gestor no soportado: {kind}")),
     })
 }
@@ -561,6 +564,8 @@ fn installed_raw(kind: &str) -> Result<Vec<App>, String> {
         "xbps" => parse_xbps_manual(&exec("xbps-query", &["-m"], SCAN_TIMEOUT)?),
         "flatpak" => parse_flatpak_list(&exec("flatpak", &["list", "--app", "--columns=application,name,version"], SCAN_TIMEOUT)?),
         "snap" => parse_snap_list(&exec("snap", &["list"], SCAN_TIMEOUT)?),
+        "nix" => parse_nix_installed(&exec("nix", &["profile", "list", "--install-profile"], SCAN_TIMEOUT)?),
+        "guix" => parse_guix_installed(&exec("guix", &["package", "--list-installed"], SCAN_TIMEOUT)?),
         _ => return Err(format!("gestor no soportado: {kind}")),
     })
 }
@@ -659,6 +664,8 @@ pub fn upgrade(kind: &str, name: &str) -> Result<(), String> {
         "flatpak" => retry_network(|| exec("flatpak", &["update", "-y", "--noninteractive", name], UPGRADE_TIMEOUT)),
         // Through the root shell, so snapd does not ask polkit for a password of its own.
         "snap" => root(&["snap", "refresh", name]),
+        "nix" => exec("nix", &["upgrade", name], UPGRADE_TIMEOUT),
+        "guix" => exec("guix", &["package", "-u", name], UPGRADE_TIMEOUT),
         _ => Err(format!("id no soportado: {kind}:{name}")),
     }
     .map(|_| ())
@@ -679,6 +686,8 @@ pub fn uninstall(kind: &str, name: &str) -> Result<(), String> {
         "xbps" => root(&["xbps-remove", "-y", name]),
         "snap" => root(&["snap", "remove", name]),
         "flatpak" => exec("flatpak", &["uninstall", "-y", "--noninteractive", name], UPGRADE_TIMEOUT),
+        "nix" => exec("nix", &["remove", name], UPGRADE_TIMEOUT),
+        "guix" => exec("guix", &["package", "-r", name], UPGRADE_TIMEOUT),
         _ => Err(format!("id no soportado: {kind}:{name}")),
     }
     .map(|_| ())
@@ -962,6 +971,81 @@ pub fn parse_snap_refresh(new: &str, installed: &str) -> Vec<App> {
         .collect()
 }
 
+/// `nix upgrade --list --no-flake` rows: `name old-version – new-version`.
+pub fn parse_nix_upgrades(out: &str) -> Vec<App> {
+    out.lines()
+        .filter_map(|l| {
+            // "nixpkgs.curl 8.5.0 – 8.6.0" or "curl 8.5.0 – 8.6.0"
+            let parts: Vec<&str> = l.split('–').collect();
+            if parts.len() != 2 {
+                return None;
+            }
+            let left: Vec<&str> = parts[0].trim().rsplitn(2, ' ').collect();
+            let to = parts[1].trim();
+            if left.len() != 2 {
+                return None;
+            }
+            let from = left[0];
+            let full = left[1];
+            // Strip nixpkgs. prefix if present
+            let name = full.strip_prefix("nixpkgs.").unwrap_or(full);
+            safe_name(name).then(|| app("nix", name, name, "Nix", from, to, Source::Nix))
+        })
+        .collect()
+}
+
+/// `nix profile list --install-profile` rows: `index  name  version  system`.
+pub fn parse_nix_installed(out: &str) -> Vec<App> {
+    out.lines()
+        .skip(1) // skip header
+        .filter_map(|l| {
+            let t: Vec<&str> = l.split_whitespace().collect();
+            if t.len() < 3 {
+                return None;
+            }
+            let full = t[1];
+            let version = t[2];
+            let name = full.strip_prefix("nixpkgs.").unwrap_or(full);
+            safe_name(name).then(|| app("nix", name, name, "Nix", version, "", Source::Nix))
+        })
+        .collect()
+}
+
+/// `guix package --list-upgrades` rows: `name version … -> new-version …`.
+pub fn parse_guix_upgrades(out: &str) -> Vec<App> {
+    out.lines()
+        .filter_map(|l| {
+            let parts: Vec<&str> = l.splitn(2, " -> ").collect();
+            if parts.len() != 2 {
+                return None;
+            }
+            let left: Vec<&str> = parts[0].trim().split_whitespace().collect();
+            let to = parts[1].trim().split_whitespace().next()?;
+            if left.is_empty() {
+                return None;
+            }
+            let name = left[0];
+            let from = if left.len() > 1 { left[1] } else { "" };
+            safe_name(name).then(|| app("guix", name, name, "Guix", from, to, Source::Guix))
+        })
+        .collect()
+}
+
+/// `guix package --list-installed` rows: `name version …`.
+pub fn parse_guix_installed(out: &str) -> Vec<App> {
+    out.lines()
+        .filter_map(|l| {
+            let t: Vec<&str> = l.split_whitespace().collect();
+            if t.len() < 2 {
+                return None;
+            }
+            let name = t[0];
+            let version = t[1];
+            safe_name(name).then(|| app("guix", name, name, "Guix", version, "", Source::Guix))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1151,5 +1235,21 @@ mod tests {
     #[test]
     fn bad_names_never_run() {
         assert_eq!(upgrade("apt", "--allow-remove-essential"), Err("id no soportado: apt:--allow-remove-essential".into()));
+    }
+
+    #[test]
+    fn nix_and_guix_parsers() {
+        // Nix upgrades: "nixpkgs.curl 8.5.0 – 8.6.0"
+        let nix = "nixpkgs.curl 8.5.0 – 8.6.0\nnixpkgs.firefox 126.0 – 127.0\nbad line\n";
+        assert_eq!(rows(&parse_nix_upgrades(nix)), [("nix:curl", "8.5.0", "8.6.0"), ("nix:firefox", "126.0", "127.0")]);
+        // Nix installed: header + rows
+        let nix_installed = "index  name  version  system\n0  nixpkgs.curl  8.5.0  x86_64-linux\n1  nixpkgs.vim  9.1  x86_64-linux\n";
+        assert_eq!(rows(&parse_nix_installed(nix_installed)), [("nix:curl", "8.5.0", ""), ("nix:vim", "9.1", "")]);
+        // Guix upgrades: "curl 8.5.0 -> 8.6.0"
+        let guix = "curl 8.5.0 -> 8.6.0\nfirefox 126.0 -> 127.0\n";
+        assert_eq!(rows(&parse_guix_upgrades(guix)), [("guix:curl", "8.5.0", "8.6.0"), ("guix:firefox", "126.0", "127.0")]);
+        // Guix installed: "name version ..."
+        let guix_installed = "curl 8.5.0 x86_64-linux\ngit 2.45.1 x86_64-linux\n";
+        assert_eq!(rows(&parse_guix_installed(guix_installed)), [("guix:curl", "8.5.0", ""), ("guix:git", "2.45.1", "")]);
     }
 }

@@ -200,9 +200,9 @@ impl UpdatesApp {
             card(ui, |ui| empty(ui, t("Hace falta un gestor de paquetes (Homebrew, winget o Flatpak) para instalar apps.")));
             return;
         }
-        let q = self.query.trim().to_lowercase();
+        let q = self.filter_state.query.trim().to_lowercase();
         let searching = self.discover.search_rx.is_some();
-        ui.horizontal(|ui| ui.with_layout(Layout::right_to_left(Align::Center), |ui| search_field(ui, &mut self.query)));
+        ui.horizontal(|ui| ui.with_layout(Layout::right_to_left(Align::Center), |ui| search_field(ui, &mut self.filter_state.query)));
         ui.add_space(12.0);
         let mut search = false;
         ui.horizontal(|ui| {
@@ -350,7 +350,7 @@ impl UpdatesApp {
             self.start_installed();
         }
         let loading = self.installed_rx.is_some();
-        let q = self.query.trim().to_lowercase();
+        let q = self.filter_state.query.trim().to_lowercase();
         let rows: Vec<usize> =
             (0..self.installed.len()).filter(|&i| q.is_empty() || self.installed[i].name.to_lowercase().contains(&q)).collect();
         let sub = if loading && self.installed.is_empty() {
@@ -362,7 +362,7 @@ impl UpdatesApp {
             }
         };
         header(ui, t("Instaladas"), &sub);
-        ui.horizontal(|ui| ui.with_layout(Layout::right_to_left(Align::Center), |ui| search_field(ui, &mut self.query)));
+        ui.horizontal(|ui| ui.with_layout(Layout::right_to_left(Align::Center), |ui| search_field(ui, &mut self.filter_state.query)));
         ui.add_space(22.0);
         let mut open: Option<App> = None;
         card(ui, |ui| {
@@ -562,8 +562,8 @@ impl UpdatesApp {
     pub(crate) fn welcome_page(&mut self, ui: &mut Ui) {
         use crate::permissions::Access;
         header(ui, t("Bienvenido a Updateeer"), t("Antes de actualizar nada, comprueba que todo está listo"));
-        let (brew, mas) = self.tools;
-        let access = self.access;
+        let (brew, mas) = self.setup.tools;
+        let access = self.setup.access;
         let installing = self.mas_install_running();
         let (mut open_perm, mut recheck, mut install_brew, mut install_mas, mut done) = (false, false, false, false, false);
         let status = |ui: &mut Ui, text: &str, ok: bool| {
@@ -598,7 +598,7 @@ impl UpdatesApp {
             });
         });
         ui.add_space(14.0);
-        if let Some(e) = &self.setup_error {
+        if let Some(e) = &self.setup.setup_error {
             ui.label(RichText::new(e).size(13.0).color(muted()));
             ui.add_space(10.0);
         }
@@ -610,7 +610,7 @@ impl UpdatesApp {
             crate::permissions::open_settings();
         }
         if recheck {
-            self.access = crate::permissions::app_management();
+            self.setup.access = crate::permissions::app_management();
         }
         if install_brew {
             self.install_tool(false);
@@ -684,8 +684,8 @@ impl UpdatesApp {
                 });
             });
             if crate::autostart::supported() {
-                let desc = self.login_error.clone().unwrap_or_else(|| t("Se abre en la barra de menú al encender el equipo.").into());
-                let mut on = self.login;
+                let desc = self.tray_state.login_error.clone().unwrap_or_else(|| t("Se abre en la barra de menú al encender el equipo.").into());
+                let mut on = self.tray_state.login;
                 setting_row(ui, t("Abrir al iniciar sesión"), &desc, |ui| {
                     if widgets::toggle(ui, &mut on).changed() {
                         want_login = Some(on);
@@ -720,15 +720,15 @@ impl UpdatesApp {
                 });
             }
             let can_install = crate::selfupdate::can_self_install();
-            let installing = self.self_update_rx.is_some();
-            let version_note = match (&self.new_release, &self.self_update_error) {
+            let installing = self.self_update.self_update_rx.is_some();
+            let version_note = match (&self.self_update.new_release, &self.self_update.self_update_error) {
                 (_, Some(e)) => tf1("No se pudo actualizar: {0}", &e.to_string()),
                 (Some(_), _) if installing => t("La app se reiniciará sola al terminar").to_string(),
                 (Some(r), _) => tf1("Hay una versión nueva: {0}", &r.version.clone()),
                 _ => "Updateeer".to_string(),
             };
             setting_row(ui, t("Versión"), &version_note, |ui| {
-                if let Some(r) = &self.new_release {
+                if let Some(r) = &self.self_update.new_release {
                     let label = if can_install { t("Instalar y reiniciar") } else { t("Descargar") };
                     if widgets::button(ui, Some(Icon::Download), label, Kind::Primary, 34.0, !installing).clicked() {
                         if can_install {
@@ -740,7 +740,7 @@ impl UpdatesApp {
                 }
                 ui.label(RichText::new(env!("CARGO_PKG_VERSION")).monospace().size(13.0).color(text_2()));
             });
-            if installing && self.self_update_error.is_none() {
+            if installing && self.self_update.self_update_error.is_none() {
                 Frame::new().inner_margin(egui::Margin::symmetric(18, 10)).show(ui, |ui| self.update_progress(ui));
             }
             if cfg!(target_os = "macos") {
@@ -787,7 +787,7 @@ impl UpdatesApp {
             self.start_self_update();
         }
         if want_welcome {
-            self.access = crate::permissions::app_management();
+            self.setup.access = crate::permissions::app_management();
             self.page = Page::Welcome;
         }
         if let Some(lang) = pick_language {

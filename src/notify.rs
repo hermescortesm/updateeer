@@ -154,6 +154,21 @@ mod imp {
                 dialog(self.tx.clone(), self.ctx.clone(), ids, icon_path(apps), title, body);
             }
         }
+
+        /// A simple informational notification with no action buttons.
+        pub fn notify(&self, title: &str, body: &str) {
+            if !self.use_notifications() {
+                return;
+            }
+            let content = UNMutableNotificationContent::new();
+            content.setTitle(&NSString::from_str(title));
+            content.setBody(&NSString::from_str(body));
+            content.setSound(Some(&UNNotificationSound::defaultSound()));
+            // Unique identifier so each notification is distinct.
+            let id = format!("info_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis());
+            let request = UNNotificationRequest::requestWithIdentifier_content_trigger(&NSString::from_str(&id), &content, None);
+            UNUserNotificationCenter::currentNotificationCenter().addNotificationRequest_withCompletionHandler(&request, None);
+        }
     }
 
     /// Ids travel in the notification identifier; none of them contains a comma.
@@ -230,6 +245,12 @@ mod imp {
                 let _ = tx.send(reply);
                 ctx.request_repaint();
             });
+        }
+
+        /// A simple informational notification with no action buttons.
+        /// On non-macOS platforms this is a no-op (no native notification API without buttons).
+        pub fn notify(&self, _title: &str, _body: &str) {
+            // Non-macOS: skip informational notifications without action buttons.
         }
     }
 

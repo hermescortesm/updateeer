@@ -26,7 +26,7 @@ pub fn run(id: &str) -> Result<(), String> {
     if let Some((kind @ ("winget" | "scoop" | "choco"), name)) = id.split_once(':') {
         return winpkg::upgrade(kind, name);
     }
-    if let Some((kind @ ("apt" | "pacman" | "aur" | "dnf" | "zypper" | "apk" | "xbps" | "flatpak" | "snap"), name)) = id.split_once(':') {
+    if let Some((kind @ ("apt" | "pacman" | "aur" | "dnf" | "zypper" | "apk" | "xbps" | "flatpak" | "snap" | "nix" | "guix"), name)) = id.split_once(':') {
         return linuxpkg::upgrade(kind, name);
     }
     let args = args(id).ok_or_else(|| format!("id no soportado: {id}"))?;
@@ -47,7 +47,7 @@ pub fn install(id: &str) -> Result<(), String> {
 
 /// Whether the app can be removed from here (not App Store or hand-installed apps).
 pub fn can_uninstall(id: &str) -> bool {
-    matches!(id.split_once(':').map(|(k, _)| k), Some("cask" | "formula" | "winget" | "scoop" | "choco" | "apt" | "pacman" | "aur" | "dnf" | "zypper" | "apk" | "xbps" | "flatpak" | "snap"))
+    matches!(id.split_once(':').map(|(k, _)| k), Some("cask" | "formula" | "winget" | "scoop" | "choco" | "apt" | "pacman" | "aur" | "dnf" | "zypper" | "apk" | "xbps" | "flatpak" | "snap" | "nix" | "guix"))
 }
 
 /// Removes an installed app by its id. Blocks; call it from a worker thread.
@@ -57,7 +57,7 @@ pub fn uninstall(id: &str) -> Result<(), String> {
     match kind {
         "cask" | "formula" if safe_token(name) => brew(&["uninstall", if kind == "cask" { "--cask" } else { "--formula" }, name], UPGRADE_TIMEOUT, false).map(|_| ()),
         "winget" | "scoop" | "choco" => winpkg::uninstall(kind, name),
-        "apt" | "pacman" | "aur" | "dnf" | "zypper" | "apk" | "xbps" | "flatpak" | "snap" => linuxpkg::uninstall(kind, name),
+        "apt" | "pacman" | "aur" | "dnf" | "zypper" | "apk" | "xbps" | "flatpak" | "snap" | "nix" | "guix" => linuxpkg::uninstall(kind, name),
         _ => Err(format!("id no soportado: {id}")),
     }
 }
