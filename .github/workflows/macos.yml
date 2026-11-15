@@ -25,10 +25,14 @@ jobs:
         run: cargo build --release --locked
 
       - name: Install dmgbuild
-        run: pip3 install dmgbuild
+        run: |
+          python3 -m venv .venv
+          source .venv/bin/activate
+          pip install dmgbuild
 
       - name: Build the .dmg
         run: |
+          source .venv/bin/activate
           mkdir -p dist
           tools/package-macos.sh
           ls -lh dist/*.dmg
