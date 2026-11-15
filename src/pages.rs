@@ -627,7 +627,7 @@ impl UpdatesApp {
 
     pub(crate) fn settings_page(&mut self, ui: &mut Ui) {
         header(ui, t("Ajustes"), t("Cómo busca Updateeer"));
-        let before = self.settings;
+        let before = self.settings.clone();
         let mut want_login = None;
         let mut pick_language: Option<Lang> = None;
         let mut want_welcome = false;

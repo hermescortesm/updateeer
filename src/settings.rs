@@ -110,7 +110,7 @@ mod tests {
 
     #[test]
     fn parse_validates_and_defaults() {
-        assert_eq!(Settings::parse(r#"{"auto":false,"hours":12,"theme":"light"}"#), Settings { auto: false, hours: 12, theme: ThemeMode::Light, hide_setup: false, auto_update: false, onboarded: false, check_updates: true, lang: None, parallel: 5, schedule: None });
+        assert_eq!(Settings::parse(r#"{"auto":false,"hours":12,"theme":"light"}"#), Settings { auto: false, hours: 12, theme: ThemeMode::Light, hide_setup: false, auto_update: false, onboarded: false, check_updates: true, lang: None, parallel: 5, schedule: None, last_version: None });
         assert_eq!(Settings::parse(r#"{"schedule":3}"#).schedule, Some(3));
         assert_eq!(Settings::parse(r#"{"schedule":30}"#).schedule, None);
         assert_eq!(Settings::parse(r#"{"parallel":2}"#).parallel, 2);
