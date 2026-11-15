@@ -316,69 +316,23 @@ pub fn summary(notes: &str) -> String {
 /// inline code `` `code` ``, and images `![alt](url)`.
 fn strip_markdown(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        match c {
-            '[' => {
-                // Collect text inside brackets
-                let mut bracket_text = String::new();
-                let mut depth = 1;
-                while let Some(&nc) = chars.peek() {
-                    if nc == '[' { depth += 1; }
-                    if nc == ']' { depth -= 1; }
-                    if depth == 0 { break; }
-                    bracket_text.push(chars.next().unwrap());
-                }
-                // Skip `(url)` if present
-                if chars.peek() == Some(&'(') {
-                    chars.next(); // consume '('
-                    let mut url_depth = 1;
-                    while let Some(&uc) = chars.peek() {
-                        if uc == '(' { url_depth += 1; }
-                        if uc == ')' { url_depth -= 1; }
-                        if url_depth == 0 { break; }
-                        chars.next();
-                    }
-                    chars.next(); // consume ')'
-                }
-                out.push_str(&bracket_text);
-            }
-            '*' => {
-                // Skip **bold** or *italic* markers
-                if chars.peek() == Some(&'*') {
-                    chars.next(); // skip second '*'
-                    // Skip until **
-                    while let Some(&nc) = chars.peek() {
-                        if nc == '*' {
-                            chars.next();
-                            if chars.peek() == Some(&'*') {
-                                chars.next();
-                                break;
-                            }
-                        } else {
-                            // Single * in a **, treat as literal
-                            break;
-                        }
-                    }
-                } else {
-                    // Single * for italic, skip until next *
-                    while let Some(&nc) = chars.peek() {
-                        if nc == '*' { break; }
-                        chars.next();
-                    }
-                    chars.next(); // consume closing '*'
+    let mut rest = s;
+    while let Some(c) = rest.chars().next() {
+        // `[text](url)` (or `![alt](url)`) -> text
+        if c == '[' {
+            if let Some((text, after)) = rest[1..].split_once(']') {
+                if let Some(url_end) = after.strip_prefix('(').and_then(|u| u.find(')')) {
+                    out.push_str(text);
+                    rest = &after[url_end + 2..];
+                    continue;
                 }
             }
-            '`' => {
-                // Skip inline code
-                while let Some(&nc) = chars.peek() {
-                    if nc == '`' { break; }
-                    chars.next();
-                }
-                chars.next(); // consume closing '`'
-            }
-            _ => out.push(c),
         }
+        // ponytail: bold/italic/code markers are dropped, their text kept
+        if !matches!(c, '*' | '`') {
+            out.push(c);
+        }
+        rest = &rest[c.len_utf8()..];
     }
     out
 }
