@@ -36,6 +36,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Rust target
+        run: rustup target add ${{ matrix.target }}
+
       - name: Rust cache
         uses: swatinem/rust-cache@v2
 
