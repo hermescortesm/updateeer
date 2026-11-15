@@ -50,11 +50,13 @@ pub struct Settings {
     pub parallel: u32,
     /// Hour of the day (0-23) when the app searches and updates on its own.
     pub schedule: Option<u8>,
+    /// Last version that ran — used to detect upgrades so TCC permissions can be re-requested.
+    pub last_version: Option<String>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { auto: true, hours: 6, theme: ThemeMode::System, hide_setup: false, auto_update: false, onboarded: false, check_updates: true, lang: None, parallel: 5, schedule: None }
+        Self { auto: true, hours: 6, theme: ThemeMode::System, hide_setup: false, auto_update: false, onboarded: false, check_updates: true, lang: None, parallel: 5, schedule: None, last_version: None }
     }
 }
 
@@ -88,6 +90,7 @@ impl Settings {
             parallel: v["parallel"].as_u64().map(|h| h as u32).filter(|h| PARALLEL.contains(h)).unwrap_or(d.parallel),
             schedule: v["schedule"].as_u64().filter(|h| *h < 24).map(|h| h as u8),
             hours: v["hours"].as_u64().map(|h| h as u32).filter(|h| HOURS.contains(h)).unwrap_or(d.hours),
+            last_version: v["last_version"].as_str().map(String::from),
         }
     }
 
@@ -97,7 +100,7 @@ impl Settings {
         if let Some(dir) = p.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        let _ = std::fs::write(p, json!({ "auto": self.auto, "hours": self.hours, "theme": self.theme.name(), "hide_setup": self.hide_setup, "auto_update": self.auto_update, "onboarded": self.onboarded, "check_updates": self.check_updates, "lang": self.lang.map(|l| l.code()), "parallel": self.parallel, "schedule": self.schedule }).to_string());
+        let _ = std::fs::write(p, json!({ "auto": self.auto, "hours": self.hours, "theme": self.theme.name(), "hide_setup": self.hide_setup, "auto_update": self.auto_update, "onboarded": self.onboarded, "check_updates": self.check_updates, "lang": self.lang.map(|l| l.code()), "parallel": self.parallel, "schedule": self.schedule, "last_version": self.last_version }).to_string());
     }
 }
 
