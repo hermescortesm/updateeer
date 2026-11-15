@@ -286,7 +286,7 @@ fn run_msi(msi: &Path, exe: &Path) -> Result<(), String> {
 }
 
 /// The release notes as plain text for the in-app "what's new": headings and bullets tidied,
-/// the checksum list left out.
+/// the checksum list left out, Markdown links and formatting stripped.
 pub fn summary(notes: &str) -> String {
     let mut out: Vec<String> = Vec::new();
     for line in notes.lines().map(str::trim) {
@@ -297,7 +297,8 @@ pub fn summary(notes: &str) -> String {
         if line.is_empty() || line.starts_with("```") {
             continue;
         }
-        match (heading, line.strip_prefix("- ")) {
+        let cleaned = strip_markdown(line);
+        match (heading, cleaned.strip_prefix("- ")) {
             (Some(h), _) => {
                 if !out.is_empty() {
                     out.push(String::new());
@@ -305,10 +306,81 @@ pub fn summary(notes: &str) -> String {
                 out.push(format!("{h}:"));
             }
             (_, Some(b)) => out.push(format!("– {b}")),
-            _ => out.push(line.to_string()),
+            _ => out.push(cleaned),
         }
     }
     out.join("\n")
+}
+
+/// Strip Markdown formatting: links `[text](url)` → `text`, bold `**text**`, italic `*text*`,
+/// inline code `` `code` ``, and images `![alt](url)`.
+fn strip_markdown(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '[' => {
+                // Collect text inside brackets
+                let mut bracket_text = String::new();
+                let mut depth = 1;
+                while let Some(&nc) = chars.peek() {
+                    if nc == '[' { depth += 1; }
+                    if nc == ']' { depth -= 1; }
+                    if depth == 0 { break; }
+                    bracket_text.push(chars.next().unwrap());
+                }
+                // Skip `(url)` if present
+                if chars.peek() == Some(&'(') {
+                    chars.next(); // consume '('
+                    let mut url_depth = 1;
+                    while let Some(&uc) = chars.peek() {
+                        if uc == '(' { url_depth += 1; }
+                        if uc == ')' { url_depth -= 1; }
+                        if url_depth == 0 { break; }
+                        chars.next();
+                    }
+                    chars.next(); // consume ')'
+                }
+                out.push_str(&bracket_text);
+            }
+            '*' => {
+                // Skip **bold** or *italic* markers
+                if chars.peek() == Some(&'*') {
+                    chars.next(); // skip second '*'
+                    // Skip until **
+                    while let Some(&nc) = chars.peek() {
+                        if nc == '*' {
+                            chars.next();
+                            if chars.peek() == Some(&'*') {
+                                chars.next();
+                                break;
+                            }
+                        } else {
+                            // Single * in a **, treat as literal
+                            break;
+                        }
+                    }
+                } else {
+                    // Single * for italic, skip until next *
+                    while let Some(&nc) = chars.peek() {
+                        if nc == '*' { break; }
+                        chars.next();
+                    }
+                    chars.next(); // consume closing '*'
+                }
+            }
+            '`' => {
+                // Skip inline code
+                while let Some(&nc) = chars.peek() {
+                    if nc == '`' { break; }
+                    chars.next();
+                }
+                chars.next(); // consume closing '`'
+            }
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 fn parts(v: &str) -> Option<Vec<u64>> {
@@ -411,6 +483,19 @@ mod tests {
         let notes = "## New\n- A banner\n\n## Notes\n- Careful\n\n## SHA-256\n- `f.deb`: `abc`\n- `f.msi`: `def`\n";
         assert_eq!(summary(notes), "New:\n– A banner\n\nNotes:\n– Careful");
         assert_eq!(summary("### Added\n- X\n\n### SHA-256\n```\nabc  file\n```\n"), "Added:\n– X");
+    }
+
+    #[test]
+    fn summary_strips_markdown_links_and_formatting() {
+        let notes = "## What's New\n- Fixed [bug](https://github.com/user/repo/issues/123) in parser\n- Added **bold** feature and *italic* improvement\n- See [release page](https://github.com/user/repo/releases) for details\n\n## SHA-256\nabc123  file.deb\n";
+        let s = summary(notes);
+        assert!(!s.contains("["));
+        assert!(!s.contains("]("));
+        assert!(!s.contains("**"));
+        assert!(s.contains("Fixed bug in parser"));
+        assert!(s.contains("Added bold feature and italic improvement"));
+        assert!(s.contains("See release page for details"));
+        assert!(!s.contains("SHA-256"));
     }
 
     #[test]
