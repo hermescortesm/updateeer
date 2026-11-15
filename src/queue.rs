@@ -224,6 +224,21 @@ impl Queue {
         }
         (done, total, if total == 0 { 0.0 } else { sum / total as f32 })
     }
+
+    /// (done, failed, total) of the current batch — for a summary notification when the batch ends.
+    pub fn batch_summary(&self) -> (usize, usize, usize) {
+        let total = self.batch.len();
+        let mut done = 0;
+        let mut failed = 0;
+        for id in &self.batch {
+            match self.status(id) {
+                Status::Done => done += 1,
+                Status::Failed => failed += 1,
+                _ => {}
+            }
+        }
+        (done, failed, total)
+    }
 }
 
 #[cfg(test)]

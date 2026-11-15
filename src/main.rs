@@ -75,8 +75,8 @@ fn main() -> eframe::Result {
             .with_title("Updateeer")
             .with_app_id("updateeer")
             .with_icon(app_icon())
-            .with_inner_size([1200.0, 780.0])
-            .with_min_inner_size([1180.0, 640.0]),
+            .with_inner_size([theme::WINDOW_WIDTH, theme::WINDOW_HEIGHT])
+            .with_min_inner_size([900.0, theme::WINDOW_MIN_HEIGHT]),
         ..Default::default()
     };
     eframe::run_native(

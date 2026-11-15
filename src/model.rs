@@ -18,6 +18,8 @@ pub enum Source {
     Xbps,
     Flatpak,
     Snap,
+    Nix,
+    Guix,
 }
 
 impl Source {
@@ -38,6 +40,8 @@ impl Source {
             "xbps" => Source::Xbps,
             "flatpak" => Source::Flatpak,
             "snap" => Source::Snap,
+            "nix" => Source::Nix,
+            "guix" => Source::Guix,
             _ => Source::Homebrew,
         }
     }
@@ -59,6 +63,8 @@ impl Source {
             Source::Xbps => "xbps",
             Source::Flatpak => "Flatpak",
             Source::Snap => "Snap",
+            Source::Nix => "Nix",
+            Source::Guix => "Guix",
         }
     }
 }

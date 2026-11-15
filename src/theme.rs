@@ -7,6 +7,58 @@ use eframe::egui::{self, Color32, CornerRadius, FontData, FontDefinitions, FontF
 pub const ACCENT: Color32 = Color32::from_rgb(0xFF, 0x8A, 0x2A);
 pub const ON_ACCENT: Color32 = Color32::from_rgb(0x1A, 0x0F, 0x05);
 
+// — UI dimension constants —
+
+/// Sidebar width in pixels.
+pub const SIDEBAR_WIDTH: f32 = 236.0;
+/// Narrow sidebar when collapsed on small screens.
+pub const NARROW_SIDEBAR_WIDTH: f32 = 64.0;
+/// Row height in the updates/installed lists.
+pub const ROW_HEIGHT: f32 = 68.0;
+/// Column titles row height.
+pub const COLUMN_TITLES_HEIGHT: f32 = 34.0;
+/// Default window inner size.
+pub const WINDOW_WIDTH: f32 = 1200.0;
+pub const WINDOW_HEIGHT: f32 = 780.0;
+/// Minimum window inner size.
+pub const WINDOW_MIN_WIDTH: f32 = 900.0;
+pub const WINDOW_MIN_HEIGHT: f32 = 640.0;
+/// Font sizes.
+pub const FONT_SIZE_DISPLAY: f32 = 36.0;
+pub const FONT_SIZE_TITLE: f32 = 20.0;
+pub const FONT_SIZE_BODY: f32 = 14.0;
+pub const FONT_SIZE_SMALL: f32 = 13.0;
+pub const FONT_SIZE_TINY: f32 = 12.0;
+pub const FONT_SIZE_MICRO: f32 = 12.5;
+/// Spacing values.
+pub const SPACING_LG: f32 = 22.0;
+pub const SPACING_MD: f32 = 12.0;
+pub const SPACING_SM: f32 = 8.0;
+pub const SPACING_XS: f32 = 4.0;
+/// Banner styling.
+pub const BANNER_CORNER_RADIUS: f32 = 14.0;
+pub const BANNER_INNER_MARGIN_X: i8 = 18;
+pub const BANNER_INNER_MARGIN_Y: i8 = 16;
+/// Button heights.
+pub const BUTTON_HEIGHT_LG: f32 = 44.0;
+pub const BUTTON_HEIGHT_MD: f32 = 36.0;
+pub const BUTTON_HEIGHT_SM: f32 = 34.0;
+/// Segment button.
+pub const SEGMENT_HEIGHT: f32 = 34.0;
+pub const SEGMENT_PADDING_X: f32 = 14.0;
+/// Row column anchors.
+pub const ROW_PADDING_X: f32 = 18.0;
+pub const ROW_CHECKBOX_END: f32 = 18.0;
+pub const ROW_ICON_START: f32 = 32.0;
+pub const ROW_ICON_END: f32 = 72.0;
+pub const ROW_NAME_START: f32 = 86.0;
+pub const ROW_NAME_END: f32 = 296.0;
+pub const ROW_VERSION_START: f32 = 310.0;
+pub const ROW_CHIP_WIDTH: f32 = 86.0;
+pub const ROW_SIZE_WIDTH: f32 = 64.0;
+pub const ROW_ACTION_WIDTH: f32 = 150.0;
+pub const ROW_VERSION_GAP: f32 = 14.0;
+
 static LIGHT: AtomicBool = AtomicBool::new(false);
 
 pub fn is_light() -> bool {

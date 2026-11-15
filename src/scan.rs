@@ -146,7 +146,7 @@ fn sources(installed: bool) -> Vec<SourceResult> {
             ("Chocolatey", winpkg::choco_path().map(|_| if installed { winpkg::choco_installed() } else { winpkg::choco_outdated() })),
         ]
     } else if cfg!(target_os = "linux") {
-        ["apt", "pacman", "aur", "dnf", "zypper", "apk", "xbps", "flatpak", "snap"]
+        ["apt", "pacman", "aur", "dnf", "zypper", "apk", "xbps", "flatpak", "snap", "nix", "guix"]
             .into_iter()
             .map(|k| (k, linuxpkg::path(k).map(|_| if installed { linuxpkg::installed(k) } else { linuxpkg::outdated(k) })))
             .collect()
@@ -175,7 +175,7 @@ fn merge(sources: Vec<SourceResult>) -> Result<Found, String> {
     }
     let text = errors.iter().map(|(n, e)| format!("{n}: {e}")).collect::<Vec<_>>().join(" · ");
     if !worked {
-        return Err(if text.is_empty() { "No se encontró ningún gestor de paquetes compatible (Homebrew, winget, Scoop, Chocolatey, apt, pacman, dnf, zypper, apk, xbps, Flatpak o Snap)".into() } else { text });
+        return Err(if text.is_empty() { "No se encontró ningún gestor de paquetes compatible (Homebrew, winget, Scoop, Chocolatey, apt, pacman, dnf, zypper, apk, xbps, Flatpak, Snap, Nix o Guix)".into() } else { text });
     }
     local::enrich(&mut apps);
     apps.sort_by_key(|a| a.name.to_lowercase());
