@@ -214,11 +214,18 @@ impl UpdatesApp {
         let (done_tx, done_rx) = mpsc::channel();
         let (icon_tx, icon_rx) = mpsc::channel();
         let (notifier, notify_rx) = Notifier::new(&ctx);
-        let settings = Settings::load();
+        let mut settings = Settings::load();
         crate::i18n::set(settings.lang.unwrap_or_else(crate::i18n::detect));
         let login = autostart::enabled();
         let tools = detect_tools();
         let access = crate::permissions::app_management();
+        // Detect version change: after an upgrade macOS revokes TCC permissions, so re-open settings.
+        let current_version = env!("CARGO_PKG_VERSION");
+        let version_changed = settings.last_version.as_deref() != Some(current_version);
+        if version_changed {
+            settings.last_version = Some(current_version.into());
+            settings.save();
+        }
         let mut app = Self {
             apps: Vec::new(),
             selected: HashSet::new(),
@@ -256,7 +263,7 @@ impl UpdatesApp {
                 access,
                 mas_install: None,
                 setup_error: None,
-                perm_prompted: false,
+                perm_prompted: !(version_changed && access == crate::permissions::Access::Denied),
             },
             tray_state: TrayState {
                 tray: None,
