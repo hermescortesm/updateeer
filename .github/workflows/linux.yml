@@ -19,6 +19,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Cargo.lock in sync
+        run: cargo metadata --locked --format-version 1 > /dev/null
+
       - name: Test
         run: cargo test --release
 
