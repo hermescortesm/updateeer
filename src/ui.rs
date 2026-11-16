@@ -308,6 +308,10 @@ impl UpdatesApp {
         self.scan.rx.is_some()
     }
 
+    fn offline(&self) -> bool {
+        self.scan.error.as_deref() == Some(t(scan::OFFLINE))
+    }
+
     /// Looks for a newer Updateeer (same rhythm as the app search: startup, the chosen frequency,
     /// and every press of "Buscar actualizaciones").
     fn check_release(&mut self) {
@@ -635,7 +639,7 @@ impl eframe::App for UpdatesApp {
             for id in self.queue.start_ready() {
                 let (tx, ctx) = (self.done_tx.clone(), self.ctx.clone());
                 thread::spawn(move || {
-                    let result = upgrade::run(&id);
+                    let result = upgrade::run(&id).map_err(scan::offline_or);
                     let _ = tx.send((id, result));
                     ctx.request_repaint();
                 });
@@ -825,7 +829,7 @@ impl UpdatesApp {
         let mut summary = if self.scanning() {
             t("Buscando actualizaciones…").to_string()
         } else if let Some(e) = &self.scan.error {
-            tf1("No se pudo buscar: {0}", &e.to_string())
+            if self.offline() { e.clone() } else { tf1("No se pudo buscar: {0}", &e.to_string()) }
         } else if available > 0 {
             let size = if total_mb > 0 { format!(" · {}", model::format_size(Some(total_mb))) } else { String::new() };
             tf("{0} disponibles{1}", &[available.to_string(), size])
@@ -923,6 +927,7 @@ impl UpdatesApp {
             .collect();
         let mut to_update: Vec<String> = Vec::new();
         let mut open: Option<App> = None;
+        let mut retry = false;
         Frame::new()
             .fill(panel())
             .stroke(Stroke::new(1.0, line()))
@@ -961,6 +966,17 @@ impl UpdatesApp {
                 ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
                     if rows.is_empty() {
                         ui.add_space(64.0);
+                        if self.offline() && !self.scanning() {
+                            ui.vertical_centered(|ui| {
+                                let (r, _) = ui.allocate_exact_size(Vec2::splat(44.0), Sense::hover());
+                                widgets::icon(ui, r, Icon::Offline, muted(), 2.0);
+                                ui.add_space(SPACING_SM);
+                                ui.label(RichText::new(t(scan::OFFLINE)).size(16.0).family(semibold()));
+                                ui.label(RichText::new(t("Revisa tu Wi-Fi o cable y vuelve a intentarlo.")).size(FONT_SIZE_SMALL).color(faint()));
+                                ui.add_space(SPACING_LG);
+                                retry = widgets::button(ui, Some(Icon::Refresh), t("Reintentar"), Kind::Soft, BUTTON_HEIGHT_SM, true).clicked();
+                            });
+                        } else {
                         ui.vertical_centered(|ui| {
                             let (msg, color) = match (&self.scan.error, self.scanning(), self.apps.is_empty()) {
                                 (Some(e), false, _) => (tf1("No se pudo buscar: {0}", &e.to_string()), muted()),
@@ -970,6 +986,7 @@ impl UpdatesApp {
                             };
                             ui.label(RichText::new(msg).color(color));
                         });
+                        }
                     }
                     for &i in &rows {
                         let app = &self.apps[i];
@@ -992,6 +1009,9 @@ impl UpdatesApp {
             });
         if let Some(app) = open {
             self.open_detail(app, Page::Updates);
+        }
+        if retry {
+            self.start_scan();
         }
         if !to_update.is_empty() {
             self.queue.enqueue(to_update.iter().map(String::as_str));

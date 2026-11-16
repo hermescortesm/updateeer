@@ -17,6 +17,8 @@ pub enum Icon {
     Compass,
     /// A turning arc: something is running.
     Busy,
+    /// Wi-Fi waves crossed out: no connection.
+    Offline,
 }
 
 /// Draws a 24x24 stroke icon scaled to `rect`.
@@ -88,6 +90,19 @@ pub fn icon(ui: &Ui, rect: Rect, kind: Icon, color: Color32, width: f32) {
             line(&[(15.5, 8.5), (13.2, 13.2), (8.5, 15.5), (10.8, 10.8), (15.5, 8.5)]);
         }
         Icon::Check => line(&[(5.0, 12.5), (9.5, 17.0), (19.0, 7.5)]),
+        Icon::Offline => {
+            for r in [4.5, 9.0, 13.5] {
+                let arc: Vec<(f32, f32)> = (0..=12)
+                    .map(|i| {
+                        let a = (-135.0 + i as f32 / 12.0 * 90.0f32).to_radians();
+                        (12.0 + r * a.cos(), 19.5 + r * a.sin())
+                    })
+                    .collect();
+                line(&arc);
+            }
+            painter.circle_filled(p(12.0, 19.5), 1.3 * s, color);
+            line(&[(4.0, 4.0), (20.0, 20.0)]);
+        }
     }
 }
 

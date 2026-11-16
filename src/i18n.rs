@@ -225,6 +225,8 @@ const TABLE: &[(&str, [&str; 6])] = &[
     ("Instalada el {0}", ["Installed on {0}", "Instalado em {0}", "Installée le {0}", "Installiert am {0}", "{0} にインストール", "安装于 {0}"]),
     ("Actualizar", ["Update", "Atualizar", "Mettre à jour", "Aktualisieren", "更新", "更新"]),
     ("Error desconocido", ["Unknown error", "Erro desconhecido", "Erreur inconnue", "Unbekannter Fehler", "不明なエラー", "未知错误"]),
+    ("Sin conexión a internet", ["No internet connection", "Sem conexão com a internet", "Pas de connexion Internet", "Keine Internetverbindung", "インターネットに接続されていません", "没有网络连接"]),
+    ("Revisa tu Wi-Fi o cable y vuelve a intentarlo.", ["Check your Wi-Fi or cable and try again.", "Verifique seu Wi-Fi ou cabo e tente novamente.", "Vérifiez votre Wi-Fi ou câble et réessayez.", "Prüfe WLAN oder Kabel und versuche es erneut.", "Wi-Fi またはケーブルを確認して、もう一度お試しください。", "请检查 Wi-Fi 或网线后重试。"]),
     ("Reintentar", ["Retry", "Tentar de novo", "Réessayer", "Erneut versuchen", "再試行", "重试"]),
     ("En cola", ["Queued", "Na fila", "En attente", "In Warteschlange", "待機中", "排队中"]),
     ("Descargando", ["Downloading", "Baixando", "Téléchargement", "Lädt herunter", "ダウンロード中", "下载中"]),

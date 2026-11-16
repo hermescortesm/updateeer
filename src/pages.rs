@@ -220,7 +220,7 @@ impl UpdatesApp {
         }
         ui.add_space(18.0);
 
-        // Catalog matches first, then whatever the online search found (when it was for this text).
+        // Catalog matches plus whatever the online search found (when it was for this text), A to Z.
         let cat = self.discover.cat;
         let mut rows: Vec<App> = self.discover.catalog.iter().filter(|a| (cat == Cat::All || catalog::CATALOG.iter().any(|e| e.name == a.name && e.cat == cat)) && (q.is_empty() || a.name.to_lowercase().contains(&q))).cloned().collect();
         if cat == Cat::All && self.discover.results_for == q {
@@ -230,6 +230,7 @@ impl UpdatesApp {
                 }
             }
         }
+        rows.sort_by_key(|a| a.name.to_lowercase());
         // What the system already has, found by id and by name: the catalog may know an app under
         // another manager (Flatpak) than the one that installed it (pacman, Snap, ...).
         let norm = |s: &str| s.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase();

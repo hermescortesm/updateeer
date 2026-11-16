@@ -129,9 +129,29 @@ pub fn tail(s: &str) -> String {
 /// Apps found plus a non-fatal warning (one source failed while another worked).
 pub type Found = (Vec<App>, Option<String>);
 
+/// Shown instead of pages of package-manager output when the machine has no connection.
+pub const OFFLINE: &str = "Sin conexión a internet";
+
+/// Whether any well-known public host answers. Asked only after something failed, so a
+/// firewall that blocks these hosts never stops a scan that works.
+// ponytail: raw TCP to public resolvers, add a captive-portal check if users report false "online"
+fn online() -> bool {
+    ["1.1.1.1:443", "8.8.8.8:443", "223.5.5.5:443"].iter().any(|a| {
+        a.parse().is_ok_and(|a| std::net::TcpStream::connect_timeout(&a, Duration::from_secs(2)).is_ok())
+    })
+}
+
+/// A failure keeps its text while online; offline it becomes one short line.
+pub fn offline_or(e: String) -> String {
+    if e == "Cancelado" || online() { e } else { crate::i18n::t(OFFLINE).to_string() }
+}
+
 /// Homebrew and App Store together. Fails only when no source worked.
 pub fn scan() -> Result<Found, String> {
-    merge(sources(false))
+    match merge(sources(false)) {
+        Ok((apps, Some(w))) => Ok((apps, Some(offline_or(w)))),
+        r => r.map_err(offline_or),
+    }
 }
 
 type SourceResult = (&'static str, Option<Result<Vec<App>, String>>);
