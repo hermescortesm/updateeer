@@ -157,7 +157,7 @@ impl UpdatesApp {
         self.discover.installs.insert(id.clone(), Inst::Running(std::time::Instant::now()));
         let (tx, ctx) = (self.discover.tx.clone(), self.ctx.clone());
         thread::spawn(move || {
-            let result = crate::upgrade::install(&id);
+            let result = crate::upgrade::install(&id).map_err(crate::scan::offline_or);
             let _ = tx.send((id, false, result));
             ctx.request_repaint();
         });
@@ -179,7 +179,7 @@ impl UpdatesApp {
         let sender = tx.0;
         let query = q.clone();
         thread::spawn(move || {
-            let _ = sender.send(discover::search(&query));
+            let _ = sender.send(discover::search(&query).map_err(crate::scan::offline_or));
             ctx.request_repaint();
         });
         self.discover.search_rx = Some(tx.1);
