@@ -84,14 +84,28 @@ fn os_language() -> Option<Lang> {
     String::from_utf8_lossy(&out.stdout).split(|c: char| !c.is_alphanumeric() && c != '-').find_map(Lang::from_code)
 }
 
+#[cfg(not(test))]
 static CURRENT: AtomicU8 = AtomicU8::new(0);
+// Tests run in parallel threads: one that switches the language must not change another's texts.
+#[cfg(test)]
+thread_local! {
+    static CURRENT: AtomicU8 = const { AtomicU8::new(0) };
+}
+
+fn with_current<R>(f: impl FnOnce(&AtomicU8) -> R) -> R {
+    #[cfg(not(test))]
+    return f(&CURRENT);
+    #[cfg(test)]
+    return CURRENT.with(f);
+}
 
 pub fn set(lang: Lang) {
-    CURRENT.store(Lang::ALL.iter().position(|l| *l == lang).unwrap_or(0) as u8, Ordering::Relaxed);
+    let i = Lang::ALL.iter().position(|l| *l == lang).unwrap_or(0) as u8;
+    with_current(|c| c.store(i, Ordering::Relaxed));
 }
 
 pub fn get() -> Lang {
-    Lang::ALL[(CURRENT.load(Ordering::Relaxed) as usize).min(Lang::ALL.len() - 1)]
+    Lang::ALL[(with_current(|c| c.load(Ordering::Relaxed)) as usize).min(Lang::ALL.len() - 1)]
 }
 
 fn index() -> &'static HashMap<&'static str, &'static [&'static str; 6]> {
