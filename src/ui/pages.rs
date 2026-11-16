@@ -241,8 +241,15 @@ impl UpdatesApp {
         }
         let (mut install, mut ask, mut cancel): (Option<String>, Option<String>, Option<String>) = (None, None, None);
         let mut uninstall: Option<(String, String)> = None;
+        // "Install" is only offered once we know what is already there (a few local reads).
+        let checking = self.installed_rx.is_some() && self.installed.is_empty();
         card(ui, |ui| {
             ui.set_height(ui.available_height());
+            if checking {
+                widgets::busy_bar(ui, 3.0);
+                empty(ui, t("Revisando qué apps ya tienes…"));
+                return;
+            }
             if rows.is_empty() {
                 let msg = match (&self.discover.search_error, searching) {
                     (Some(e), _) => tf1("No se pudo buscar: {0}", &e.to_string()),
@@ -319,7 +326,7 @@ impl UpdatesApp {
         }
     }
 
-    fn start_installed(&mut self) {
+    pub(crate) fn start_installed(&mut self) {
         self.installed_stale = false;
         self.installed_error = None;
         let (tx, rx) = mpsc::channel();

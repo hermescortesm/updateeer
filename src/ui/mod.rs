@@ -307,6 +307,10 @@ impl UpdatesApp {
         };
         app.tray_state.tray = Tray::new(&app.ctx, app.tray_state.login);
         app.start_scan();
+        // Read ahead what is installed, so Discover knows it before showing anything to install.
+        if !start_hidden {
+            app.start_installed();
+        }
         let past: Vec<App> = app.history.iter().map(|e| e.app.clone()).collect();
         app.request_icons(&past);
         app
