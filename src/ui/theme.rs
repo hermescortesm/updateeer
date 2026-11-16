@@ -109,12 +109,12 @@ pub fn install_fonts(ctx: &egui::Context, lang: crate::i18n::Lang) {
     let mut fonts = FontDefinitions::default();
     let embedded: [(&str, &[u8]); 6] = [
         // Noto Sans CJK (SIL OFL), cut down to the characters the interface uses.
-        ("noto-jp", include_bytes!("../assets/fonts/NotoSansCJKjp-Subset.otf")),
-        ("noto-sc", include_bytes!("../assets/fonts/NotoSansCJKsc-Subset.otf")),
-        ("geist", include_bytes!("../assets/fonts/Geist-Regular.ttf")),
-        ("geist-semibold", include_bytes!("../assets/fonts/Geist-SemiBold.ttf")),
-        ("geist-mono", include_bytes!("../assets/fonts/GeistMono-Regular.ttf")),
-        ("bricolage", include_bytes!("../assets/fonts/Bricolage-Bold.ttf")),
+        ("noto-jp", include_bytes!("../../assets/fonts/NotoSansCJKjp-Subset.otf")),
+        ("noto-sc", include_bytes!("../../assets/fonts/NotoSansCJKsc-Subset.otf")),
+        ("geist", include_bytes!("../../assets/fonts/Geist-Regular.ttf")),
+        ("geist-semibold", include_bytes!("../../assets/fonts/Geist-SemiBold.ttf")),
+        ("geist-mono", include_bytes!("../../assets/fonts/GeistMono-Regular.ttf")),
+        ("bricolage", include_bytes!("../../assets/fonts/Bricolage-Bold.ttf")),
     ];
     for (name, bytes) in embedded {
         fonts.font_data.insert(name.into(), Arc::new(FontData::from_static(bytes)));
@@ -257,7 +257,7 @@ mod tests {
     fn embedded_fonts_draw_the_language_names() {
         let ctx = egui::Context::default();
         let mut fonts = FontDefinitions::default();
-        for (name, bytes) in [("geist", &include_bytes!("../assets/fonts/Geist-Regular.ttf")[..]), ("noto-jp", &include_bytes!("../assets/fonts/NotoSansCJKjp-Subset.otf")[..]), ("noto-sc", &include_bytes!("../assets/fonts/NotoSansCJKsc-Subset.otf")[..])] {
+        for (name, bytes) in [("geist", &include_bytes!("../../assets/fonts/Geist-Regular.ttf")[..]), ("noto-jp", &include_bytes!("../../assets/fonts/NotoSansCJKjp-Subset.otf")[..]), ("noto-sc", &include_bytes!("../../assets/fonts/NotoSansCJKsc-Subset.otf")[..])] {
             fonts.font_data.insert(name.into(), Arc::new(FontData::from_static(bytes)));
         }
         set_families(&mut fonts, false, Lang::Zh);

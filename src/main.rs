@@ -3,36 +3,28 @@
 #[cfg(target_os = "macos")]
 mod askpass;
 mod autostart;
-mod catalog;
+mod fail;
 mod friendly;
 mod history;
 mod i18n;
-mod discover;
-mod icons;
-mod linuxpkg;
-mod local;
-mod logos;
-mod mas;
-mod masroot;
+mod managers;
 mod model;
 mod native;
 mod notify;
-mod pages;
 mod permissions;
 mod queue;
 mod running;
-mod scan;
 mod selfupdate;
 mod settings;
 mod setup;
 mod skip;
 mod sudobridge;
-mod theme;
 mod tray;
 mod ui;
-mod upgrade;
-mod winpkg;
-mod widgets;
+
+// Short paths (`crate::scan`, `crate::theme`) for the modules used all over the app.
+use managers::{catalog, discover, linuxpkg, local, mas, masroot, scan, upgrade, winpkg};
+use ui::{icons, logos, pages, theme, widgets};
 
 /// The Dock / window icon, drawn by `tools/gen_icon.py`.
 fn app_icon() -> eframe::egui::IconData {

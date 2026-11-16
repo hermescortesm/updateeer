@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
+use crate::fail::Fail;
 use crate::{linuxpkg, local, mas, winpkg};
 use crate::model::{App, Source};
 
@@ -86,7 +87,7 @@ pub fn run(mut cmd: Command, args: &[&str], timeout: Duration) -> Result<String,
             Some(st) => break st,
             None if CANCEL_GEN.load(Ordering::SeqCst) != generation => {
                 kill_tree(&mut child);
-                return Err("Cancelado".into());
+                return Err(Fail::Cancelled.into());
             }
             None if Instant::now() >= deadline => {
                 kill_tree(&mut child);
@@ -129,9 +130,6 @@ pub fn tail(s: &str) -> String {
 /// Apps found plus a non-fatal warning (one source failed while another worked).
 pub type Found = (Vec<App>, Option<String>);
 
-/// Shown instead of pages of package-manager output when the machine has no connection.
-pub const OFFLINE: &str = "Sin conexión a internet";
-
 /// Whether any well-known public host answers. Asked only after something failed, so a
 /// firewall that blocks these hosts never stops a scan that works.
 // ponytail: raw TCP to public resolvers, add a captive-portal check if users report false "online"
@@ -143,7 +141,7 @@ fn online() -> bool {
 
 /// A failure keeps its text while online; offline it becomes one short line.
 pub fn offline_or(e: String) -> String {
-    if e == "Cancelado" || online() { e } else { crate::i18n::t(OFFLINE).to_string() }
+    if Fail::Cancelled.is(&e) || online() { e } else { Fail::Offline.into() }
 }
 
 /// Homebrew and App Store together. Fails only when no source worked.
@@ -166,7 +164,7 @@ fn sources(installed: bool) -> Vec<SourceResult> {
             ("Chocolatey", winpkg::choco_path().map(|_| if installed { winpkg::choco_installed() } else { winpkg::choco_outdated() })),
         ]
     } else if cfg!(target_os = "linux") {
-        ["apt", "pacman", "aur", "dnf", "zypper", "apk", "xbps", "flatpak", "snap", "nix", "guix"]
+        linuxpkg::KINDS
             .into_iter()
             .map(|k| (k, linuxpkg::path(k).map(|_| if installed { linuxpkg::installed(k) } else { linuxpkg::outdated(k) })))
             .collect()
@@ -398,7 +396,7 @@ mod tests {
         thread::sleep(Duration::from_millis(400));
         let started = Instant::now();
         cancel_running();
-        assert_eq!(worker.join().unwrap(), Err("Cancelado".to_string()));
+        assert_eq!(worker.join().unwrap(), Err(Fail::Cancelled.into()));
         assert!(started.elapsed() < Duration::from_secs(3));
     }
 

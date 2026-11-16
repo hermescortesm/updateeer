@@ -312,7 +312,7 @@ mod tests {
         assert!(["a", "b", "c"].iter().all(|id| q.status(id) == Status::Available));
         assert!(!q.is_busy());
         // The killed processes report back: no retry, no failure.
-        q.finish("a", Err("Cancelado".into()));
+        q.finish("a", Err(crate::fail::Fail::Cancelled.into()));
         assert_eq!(q.status("a"), Status::Available);
         assert_eq!(q.failed_count(), 0);
         assert!(q.start_ready().is_empty());
