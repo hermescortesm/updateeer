@@ -242,6 +242,7 @@ const TABLE: &[(&str, [&str; 6])] = &[
     ("Sin conexión a internet", ["No internet connection", "Sem conexão com a internet", "Pas de connexion Internet", "Keine Internetverbindung", "インターネットに接続されていません", "没有网络连接"]),
     ("Revisa tu Wi-Fi o cable y vuelve a intentarlo.", ["Check your Wi-Fi or cable and try again.", "Verifique seu Wi-Fi ou cabo e tente novamente.", "Vérifiez votre Wi-Fi ou câble et réessayez.", "Prüfe WLAN oder Kabel und versuche es erneut.", "Wi-Fi またはケーブルを確認して、もう一度お試しください。", "请检查 Wi-Fi 或网线后重试。"]),
     ("Revisando qué apps ya tienes…", ["Checking which apps you already have…", "Verificando quais apps você já tem…", "Vérification des apps déjà installées…", "Prüfe, welche Apps du schon hast…", "インストール済みのアプリを確認しています…", "正在检查你已安装的应用…"]),
+    ("Abrir App Store", ["Open App Store", "Abrir a App Store", "Ouvrir l'App Store", "App Store öffnen", "App Storeを開く", "打开 App Store"]),
     ("Reintentar", ["Retry", "Tentar de novo", "Réessayer", "Erneut versuchen", "再試行", "重试"]),
     ("En cola", ["Queued", "Na fila", "En attente", "In Warteschlange", "待機中", "排队中"]),
     ("Descargando", ["Downloading", "Baixando", "Téléchargement", "Lädt herunter", "ダウンロード中", "下载中"]),

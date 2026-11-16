@@ -565,6 +565,8 @@ impl eframe::App for UpdatesApp {
     /// Runs on every wake-up, even while the window is covered or hidden (`ui` is skipped then):
     /// background results are collected and the queue keeps moving.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Tray actions (open, scan, quit) must work while the window is hidden, when `ui` does not run.
+        self.menu_bar();
         self.poll_mas_install();
         self.poll_notify();
         self.poll_scan();
@@ -608,6 +610,9 @@ impl eframe::App for UpdatesApp {
         if self.queue.is_busy() {
             let dt = self.last_logic.elapsed().as_secs_f32();
             self.queue.creep(dt);
+            if let Some(p) = crate::linuxpkg::pacman_progress() {
+                self.queue.report("pacman:", p);
+            }
             for id in self.queue.start_ready() {
                 let (tx, ctx) = (self.done_tx.clone(), self.ctx.clone());
                 thread::spawn(move || {
@@ -637,7 +642,6 @@ impl eframe::App for UpdatesApp {
         if light != theme::is_light() {
             theme::apply(&self.ctx, light);
         }
-        self.menu_bar();
         // The user may have installed a tool in Terminal: look again when the window is focused.
         let focused = ui.input(|i| i.focused);
         if focused && !self.was_focused {

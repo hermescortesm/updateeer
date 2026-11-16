@@ -406,7 +406,21 @@ fn row_inner(ui: &mut Ui, app: &App, status: Status, error: Option<&str>, select
         Status::Available => clicked = widgets::button(ui, None, t("Actualizar"), Kind::Soft, BUTTON_HEIGHT_SM, enabled).clicked(),
         Status::Failed => {
             let tip = error.unwrap_or(t("Error desconocido")).to_string();
-            clicked = widgets::button(ui, None, t("Reintentar"), Kind::Soft, BUTTON_HEIGHT_SM, enabled).on_hover_text(tip).clicked();
+            if app.source == Source::AppStore {
+                // `mas` can fail where the App Store itself still works: offer to finish there.
+                ui.vertical(|ui| {
+                    ui.set_width(ROW_ACTION_WIDTH);
+                    ui.add_space(8.0);
+                    ui.spacing_mut().item_spacing.y = 3.0;
+                    clicked = widgets::button(ui, None, t("Reintentar"), Kind::Soft, BUTTON_HEIGHT_SM, enabled).on_hover_text(tip).clicked();
+                    let link = ui.add(egui::Label::new(RichText::new(t("Abrir App Store")).size(FONT_SIZE_MICRO).color(accent_text()).underline()).sense(Sense::click()));
+                    if link.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                        let _ = std::process::Command::new("open").args(["-a", "App Store"]).spawn();
+                    }
+                });
+            } else {
+                clicked = widgets::button(ui, None, t("Reintentar"), Kind::Soft, BUTTON_HEIGHT_SM, enabled).on_hover_text(tip).clicked();
+            }
         }
         Status::Queued => {
             ui.label(RichText::new(t("En cola")).size(FONT_SIZE_SMALL).color(faint()));

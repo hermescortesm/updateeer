@@ -24,6 +24,7 @@ use desktop::*;
 use parse::*;
 use root::*;
 pub use desktop::{direct_apps, icon_file, is_gui};
+pub use root::pacman_progress;
 
 /// Every Linux package manager supported, as used in app ids (`pacman:firefox`).
 pub const KINDS: [&str; 11] = ["apt", "pacman", "aur", "dnf", "zypper", "apk", "xbps", "flatpak", "snap", "nix", "guix"];
