@@ -8,6 +8,7 @@ use eframe::egui::{self, Align, CornerRadius, Frame, Layout, Margin, Rect, RichT
 
 use crate::i18n::{t, tf, tf1};
 use crate::pages::{card, header, list_row};
+use crate::docker::{self, Action, Engine};
 use crate::storage::{self, Disk, Item, Place, format_bytes};
 use crate::theme::*;
 use crate::ui::{UpdatesApp, cell};
@@ -20,13 +21,15 @@ enum Msg {
     Folder(PathBuf, Vec<Item>),
     Size(PathBuf, PathBuf, u64),
     FolderDone(PathBuf),
+    Docker(Vec<Engine>),
     Done(String),
 }
 
 /// A destructive action waiting for the user's yes.
-enum Ask {
+pub(super) enum Ask {
     Clean,
     Trash(PathBuf),
+    Docker(Action),
 }
 
 pub(crate) struct Storage {
@@ -41,15 +44,19 @@ pub(crate) struct Storage {
     items: Vec<Item>,
     loading_overview: bool,
     loading_folder: bool,
-    acting: bool,
-    ask: Option<Ask>,
-    note: Option<String>,
+    pub(super) acting: bool,
+    pub(super) ask: Option<Ask>,
+    pub(super) note: Option<String>,
+    /// Whether `note` is about Docker (shown in its card) or about the cleanup.
+    pub(super) note_docker: bool,
+    pub(super) engines: Vec<Engine>,
+    pub(super) loading_docker: bool,
 }
 
 impl Storage {
     pub(crate) fn new() -> Self {
         let (tx, rx) = mpsc::channel();
-        Self { tx, rx, started: false, disk: None, places: Vec::new(), picked: HashSet::new(), dir: None, items: Vec::new(), loading_overview: false, loading_folder: false, acting: false, ask: None, note: None }
+        Self { tx, rx, started: false, disk: None, places: Vec::new(), picked: HashSet::new(), dir: None, items: Vec::new(), loading_overview: false, loading_folder: false, acting: false, ask: None, note: None, note_docker: false, engines: Vec::new(), loading_docker: false }
     }
 }
 
@@ -110,6 +117,7 @@ impl UpdatesApp {
             ui.add_space(16.0);
             self.cleanup_card(ui);
             ui.add_space(16.0);
+            self.containers_card(ui);
             self.explorer_card(ui);
             ui.add_space(8.0);
         });
@@ -140,6 +148,10 @@ impl UpdatesApp {
                 Msg::FolderDone(dir) if s.dir.as_deref() == Some(dir.as_path()) => s.loading_folder = false,
                 // Late news of a folder the user already left.
                 Msg::Folder(..) | Msg::Size(..) | Msg::FolderDone(..) => {}
+                Msg::Docker(engines) => {
+                    s.engines = engines;
+                    s.loading_docker = false;
+                }
                 Msg::Done(note) => {
                     s.note = Some(note);
                     s.acting = false;
@@ -157,6 +169,12 @@ impl UpdatesApp {
             let _ = tx.send(Msg::Overview(disk, storage::cleanable()));
             ctx.request_repaint();
         });
+        self.storage.loading_docker = true;
+        let (tx, ctx) = (self.storage.tx.clone(), self.ctx.clone());
+        thread::spawn(move || {
+            let _ = tx.send(Msg::Docker(docker::scan()));
+            ctx.request_repaint();
+        });
         self.storage_open(dir);
     }
 
@@ -169,15 +187,18 @@ impl UpdatesApp {
     }
 
     /// Runs `work` on a thread, then re-measures everything and reports its note.
-    fn storage_act(&mut self, work: impl FnOnce() -> String + Send + 'static) {
+    pub(super) fn storage_act(&mut self, docker: bool, work: impl FnOnce() -> String + Send + 'static) {
         let s = &mut self.storage;
-        (s.acting, s.ask, s.note) = (true, None, None);
+        (s.acting, s.ask, s.note, s.note_docker) = (true, None, None, docker);
         let (tx, ctx, dir) = (s.tx.clone(), self.ctx.clone(), s.dir.clone());
         thread::spawn(move || {
             let note = work();
             let disk = storage::home().and_then(|h| storage::disk(&h));
             let _ = tx.send(Msg::Overview(disk, storage::cleanable()));
             let _ = tx.send(Msg::Done(note));
+            if docker {
+                let _ = tx.send(Msg::Docker(crate::docker::scan()));
+            }
             ctx.request_repaint();
             // The sizes changed: read the folder again, without holding the note back.
             if let Some(dir) = dir {
@@ -280,7 +301,7 @@ impl UpdatesApp {
                     ui.label(RichText::new(t("Limpiando…")).size(FONT_SIZE_SMALL).color(faint()));
                 } else if matches!(self.storage.ask, Some(Ask::Clean)) {
                     ui.label(RichText::new(tf1("¿Borrar {0}? No se puede deshacer.", &format_bytes(total))).size(FONT_SIZE_SMALL).family(semibold()));
-                } else if let Some(note) = &self.storage.note {
+                } else if let Some(note) = self.storage.note.as_ref().filter(|_| !self.storage.note_docker) {
                     ui.add(egui::Label::new(RichText::new(note).size(FONT_SIZE_SMALL).color(ok())).truncate());
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -301,7 +322,7 @@ impl UpdatesApp {
             self.storage.ask = None;
         }
         if go {
-            self.storage_act(move || {
+            self.storage_act(false, move || {
                 let before: u64 = chosen.iter().map(|p| p.bytes).sum();
                 let skipped: usize = chosen.iter().map(storage::clean).sum();
                 let after: u64 = chosen.into_iter().map(|mut p| { storage::measure_place(&mut p); p.bytes }).sum();
@@ -402,7 +423,7 @@ impl UpdatesApp {
         } else if cancel {
             self.storage.ask = None;
         } else if let Some(path) = confirmed {
-            self.storage_act(move || {
+            self.storage_act(false, move || {
                 let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                 match storage::trash(&path) {
                     Ok(()) => tf1("«{0}» está en la papelera", &name),

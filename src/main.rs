@@ -3,6 +3,7 @@
 #[cfg(target_os = "macos")]
 mod askpass;
 mod autostart;
+mod docker;
 mod fail;
 mod friendly;
 mod history;

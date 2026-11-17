@@ -1,5 +1,6 @@
 //! The main window: app state, the sidebar and the frame around each page.
 mod banners;
+mod containers;
 mod disk;
 pub mod icons;
 pub mod logos;
