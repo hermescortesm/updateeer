@@ -13,6 +13,7 @@ use std::sync::Mutex;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
+use crate::fail::Fail;
 use crate::scan::{self, UPGRADE_TIMEOUT};
 
 const LOOP: &str = r#"d="$1"; uid="$2"; gid="$3"; parent="$4"; token="$5"; mas="$6"; limit="$7"; pre="$8"
@@ -141,7 +142,7 @@ fn ask(helper: &Helper, id: &str) -> Ask {
         }
         if scan::CANCEL_GEN.load(Ordering::SeqCst) != generation {
             let _ = fs::write(format!("{}.cancel", resp.display()), "");
-            return Ask::Done(Err("Cancelado".into()));
+            return Ask::Done(Err(Fail::Cancelled.into()));
         }
         if Instant::now() >= deadline + Duration::from_secs(10) {
             let _ = fs::write(format!("{}.cancel", resp.display()), "");
@@ -157,7 +158,7 @@ static REQUESTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::ne
 fn admin_launcher(command: &str) -> Result<(), String> {
     let script = format!("do shell script {} with administrator privileges", crate::setup::applescript_string(command));
     scan::run(Command::new("/usr/bin/osascript"), &["-e", &script], Duration::from_secs(120)).map(|_| ()).map_err(|e| {
-        if e.contains("-128") { crate::i18n::t("Cancelaste la petición de contraseña").to_string() } else { e }
+        if e.contains("-128") { Fail::PasswordCancelled.into() } else { e }
     })
 }
 

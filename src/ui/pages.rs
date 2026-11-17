@@ -18,7 +18,7 @@ use crate::discover;
 use crate::ui::{Page, UpdatesApp, cell, combo, search_field, segment};
 use crate::widgets::{self, Icon, Kind};
 
-fn header(ui: &mut Ui, title: &str, subtitle: &str) {
+pub(crate) fn header(ui: &mut Ui, title: &str, subtitle: &str) {
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing.y = 6.0;
         ui.label(RichText::new(title).size(36.0).family(display()));
@@ -27,7 +27,7 @@ fn header(ui: &mut Ui, title: &str, subtitle: &str) {
     ui.add_space(22.0);
 }
 
-fn card(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
+pub(crate) fn card(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
     Frame::new().fill(panel()).stroke(Stroke::new(1.0, line())).corner_radius(16).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.spacing_mut().item_spacing = Vec2::ZERO;
@@ -41,7 +41,7 @@ fn empty(ui: &mut Ui, msg: &str) {
 }
 
 /// A 68px list row with hover and divider; returns its rect and the left/right content edges.
-fn list_row(ui: &mut Ui) -> (egui::Rect, f32, f32) {
+pub(crate) fn list_row(ui: &mut Ui) -> (egui::Rect, f32, f32) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 68.0), Sense::hover());
     if ui.rect_contains_pointer(rect) {
         ui.painter().rect_filled(rect, 0, tint(6));
@@ -157,7 +157,7 @@ impl UpdatesApp {
         self.discover.installs.insert(id.clone(), Inst::Running(std::time::Instant::now()));
         let (tx, ctx) = (self.discover.tx.clone(), self.ctx.clone());
         thread::spawn(move || {
-            let result = crate::upgrade::install(&id);
+            let result = crate::upgrade::install(&id).map_err(crate::scan::offline_or);
             let _ = tx.send((id, false, result));
             ctx.request_repaint();
         });
@@ -179,7 +179,7 @@ impl UpdatesApp {
         let sender = tx.0;
         let query = q.clone();
         thread::spawn(move || {
-            let _ = sender.send(discover::search(&query));
+            let _ = sender.send(discover::search(&query).map_err(crate::scan::offline_or));
             ctx.request_repaint();
         });
         self.discover.search_rx = Some(tx.1);
@@ -220,7 +220,7 @@ impl UpdatesApp {
         }
         ui.add_space(18.0);
 
-        // Catalog matches first, then whatever the online search found (when it was for this text).
+        // Catalog matches plus whatever the online search found (when it was for this text).
         let cat = self.discover.cat;
         let mut rows: Vec<App> = self.discover.catalog.iter().filter(|a| (cat == Cat::All || catalog::CATALOG.iter().any(|e| e.name == a.name && e.cat == cat)) && (q.is_empty() || a.name.to_lowercase().contains(&q))).cloned().collect();
         if cat == Cat::All && self.discover.results_for == q {
@@ -238,10 +238,20 @@ impl UpdatesApp {
             have.entry(a.id.to_lowercase()).or_insert_with(|| a.clone());
             have.entry(format!("name:{}", norm(&a.name))).or_insert_with(|| a.clone());
         }
+        // What can be installed comes first, what is already there below; each part A to Z.
+        let present = |a: &App| have.contains_key(&a.id.to_lowercase()) || have.contains_key(&format!("name:{}", norm(&a.name)));
+        rows.sort_by_cached_key(|a| (present(a), a.name.to_lowercase()));
         let (mut install, mut ask, mut cancel): (Option<String>, Option<String>, Option<String>) = (None, None, None);
         let mut uninstall: Option<(String, String)> = None;
+        // "Install" is only offered once we know what is already there (a few local reads).
+        let checking = self.installed_rx.is_some() && self.installed.is_empty();
         card(ui, |ui| {
             ui.set_height(ui.available_height());
+            if checking {
+                widgets::busy_bar(ui, 3.0);
+                empty(ui, t("Revisando qué apps ya tienes…"));
+                return;
+            }
             if rows.is_empty() {
                 let msg = match (&self.discover.search_error, searching) {
                     (Some(e), _) => tf1("No se pudo buscar: {0}", &e.to_string()),
@@ -318,7 +328,7 @@ impl UpdatesApp {
         }
     }
 
-    fn start_installed(&mut self) {
+    pub(crate) fn start_installed(&mut self) {
         self.installed_stale = false;
         self.installed_error = None;
         let (tx, rx) = mpsc::channel();
