@@ -16,7 +16,10 @@ use crate::widgets::{self, Icon, Kind};
 /// What the background threads report.
 enum Msg {
     Overview(Option<Disk>, Vec<Place>),
+    /// A folder's entries, before the folders among them are measured.
     Folder(PathBuf, Vec<Item>),
+    Size(PathBuf, PathBuf, u64),
+    FolderDone(PathBuf),
     Done(String),
 }
 
@@ -48,6 +51,24 @@ impl Storage {
         let (tx, rx) = mpsc::channel();
         Self { tx, rx, started: false, disk: None, places: Vec::new(), picked: HashSet::new(), dir: None, items: Vec::new(), loading_overview: false, loading_folder: false, acting: false, ask: None, note: None }
     }
+}
+
+/// Biggest first; the folders still being measured wait at the bottom.
+fn sort_items(items: &mut [Item]) {
+    items.sort_by_key(|i| (i.bytes.is_none(), std::cmp::Reverse(i.bytes)));
+}
+
+/// Lists a folder and measures its subfolders, reporting each step.
+fn scan_folder(dir: &Path, tx: &Sender<Msg>, ctx: &egui::Context) {
+    let items = storage::list(dir);
+    let _ = tx.send(Msg::Folder(dir.to_path_buf(), items.clone()));
+    ctx.request_repaint();
+    storage::measure(&items, |path, bytes| {
+        let _ = tx.send(Msg::Size(dir.to_path_buf(), path.to_path_buf(), bytes));
+        ctx.request_repaint();
+    });
+    let _ = tx.send(Msg::FolderDone(dir.to_path_buf()));
+    ctx.request_repaint();
 }
 
 fn section(ui: &mut Ui, title: &str, add_right: impl FnOnce(&mut Ui)) {
@@ -105,12 +126,20 @@ impl UpdatesApp {
                     s.places = places;
                     s.loading_overview = false;
                 }
-                Msg::Folder(dir, items) => {
-                    if s.dir.as_deref() == Some(dir.as_path()) {
-                        s.items = items;
-                        s.loading_folder = false;
-                    }
+                Msg::Folder(dir, items) if s.dir.as_deref() == Some(dir.as_path()) => {
+                    s.items = items;
+                    s.loading_folder = true;
+                    sort_items(&mut s.items);
                 }
+                Msg::Size(dir, path, bytes) if s.dir.as_deref() == Some(dir.as_path()) => {
+                    if let Some(item) = s.items.iter_mut().find(|i| i.path == path) {
+                        item.bytes = Some(bytes);
+                    }
+                    sort_items(&mut s.items);
+                }
+                Msg::FolderDone(dir) if s.dir.as_deref() == Some(dir.as_path()) => s.loading_folder = false,
+                // Late news of a folder the user already left.
+                Msg::Folder(..) | Msg::Size(..) | Msg::FolderDone(..) => {}
                 Msg::Done(note) => {
                     s.note = Some(note);
                     s.acting = false;
@@ -136,11 +165,7 @@ impl UpdatesApp {
         (s.dir, s.loading_folder, s.ask) = (Some(dir.clone()), true, None);
         s.items.clear();
         let (tx, ctx) = (s.tx.clone(), self.ctx.clone());
-        thread::spawn(move || {
-            let items = storage::children(&dir);
-            let _ = tx.send(Msg::Folder(dir, items));
-            ctx.request_repaint();
-        });
+        thread::spawn(move || scan_folder(&dir, &tx, &ctx));
     }
 
     /// Runs `work` on a thread, then re-measures everything and reports its note.
@@ -152,11 +177,12 @@ impl UpdatesApp {
             let note = work();
             let disk = storage::home().and_then(|h| storage::disk(&h));
             let _ = tx.send(Msg::Overview(disk, storage::cleanable()));
-            if let Some(dir) = dir {
-                let _ = tx.send(Msg::Folder(dir.clone(), storage::children(&dir)));
-            }
             let _ = tx.send(Msg::Done(note));
             ctx.request_repaint();
+            // The sizes changed: read the folder again, without holding the note back.
+            if let Some(dir) = dir {
+                scan_folder(&dir, &tx, &ctx);
+            }
         });
     }
 
@@ -278,7 +304,7 @@ impl UpdatesApp {
             self.storage_act(move || {
                 let before: u64 = chosen.iter().map(|p| p.bytes).sum();
                 let skipped: usize = chosen.iter().map(storage::clean).sum();
-                let after: u64 = chosen.into_iter().map(|mut p| { storage::measure(&mut p); p.bytes }).sum();
+                let after: u64 = chosen.into_iter().map(|mut p| { storage::measure_place(&mut p); p.bytes }).sum();
                 let freed = tf1("Se liberaron {0}", &format_bytes(before.saturating_sub(after)));
                 if skipped > 0 { format!("{freed} · {}", tf1("{0} elementos estaban en uso y se dejaron", &skipped.to_string())) } else { freed }
             });
@@ -304,14 +330,15 @@ impl UpdatesApp {
             });
             if self.storage.loading_folder {
                 busy_label(ui, t("Calculando tamaños…"));
-            } else if self.storage.items.is_empty() {
+            }
+            if !self.storage.loading_folder && self.storage.items.is_empty() {
                 ui.horizontal(|ui| {
                     ui.add_space(18.0);
                     ui.label(RichText::new(t("Carpeta vacía")).size(FONT_SIZE_SMALL).color(faint()));
                 });
                 ui.add_space(18.0);
             }
-            let biggest = self.storage.items.first().map_or(1, |i| i.bytes.max(1));
+            let biggest = self.storage.items.iter().filter_map(|i| i.bytes).max().unwrap_or(1).max(1);
             for item in &self.storage.items {
                 let asked = matches!(&self.storage.ask, Some(Ask::Trash(p)) if *p == item.path);
                 let (rect, left, right) = list_row(ui);
@@ -334,15 +361,18 @@ impl UpdatesApp {
                 cell(ui, rect, bar_x.0, bar_x.1, Layout::left_to_right(Align::Center), |ui| {
                     if asked {
                         ui.add(egui::Label::new(RichText::new(t("¿Mover a la papelera?")).size(FONT_SIZE_SMALL).family(semibold())).truncate());
-                    } else if bar_x.1 - bar_x.0 > 30.0 {
+                    } else if let Some(bytes) = item.bytes
+                        && bar_x.1 - bar_x.0 > 30.0
+                    {
                         let (r, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 8.0), Sense::hover());
                         ui.painter().rect_filled(r, 4, tint(10));
-                        let fill = Rect::from_min_size(r.min, Vec2::new((r.width() * item.bytes as f32 / biggest as f32).max(3.0), r.height()));
+                        let fill = Rect::from_min_size(r.min, Vec2::new((r.width() * bytes as f32 / biggest as f32).max(3.0), r.height()));
                         ui.painter().rect_filled(fill, 4, ACCENT);
                     }
                 });
                 cell(ui, rect, size_x, actions_x - 8.0, Layout::right_to_left(Align::Center), |ui| {
-                    ui.label(RichText::new(format_bytes(item.bytes)).monospace().size(FONT_SIZE_SMALL).color(text_2()));
+                    let size = item.bytes.map_or("…".to_string(), format_bytes);
+                    ui.label(RichText::new(size).monospace().size(FONT_SIZE_SMALL).color(text_2()));
                 });
                 cell(ui, rect, actions_x, right, Layout::right_to_left(Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;

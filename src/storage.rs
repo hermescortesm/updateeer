@@ -2,7 +2,6 @@
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::Duration;
@@ -23,11 +22,12 @@ pub struct Place {
     pub bytes: u64,
 }
 
-/// One entry of the folder being explored.
+/// One entry of the folder being explored. A folder's size is unknown until `measure` gets to it.
+#[derive(Clone)]
 pub struct Item {
     pub path: PathBuf,
     pub name: String,
-    pub bytes: u64,
+    pub bytes: Option<u64>,
     pub is_dir: bool,
 }
 
@@ -103,14 +103,14 @@ pub fn size(path: &Path) -> u64 {
 pub fn cleanable() -> Vec<Place> {
     let Some(home) = home() else { return Vec::new() };
     let mut all = places(&home, &std::env::temp_dir());
-    all.iter_mut().for_each(measure);
+    all.iter_mut().for_each(measure_place);
     all.retain(|p| p.bytes > 0);
     all.sort_by_key(|p| std::cmp::Reverse(p.bytes));
     all
 }
 
 /// Sets how much `clean` would free.
-pub fn measure(p: &mut Place) {
+pub fn measure_place(p: &mut Place) {
     p.bytes = contents(p).iter().map(|e| size(e)).sum();
 }
 
@@ -136,25 +136,34 @@ pub fn clean(p: &Place) -> usize {
         .count()
 }
 
-/// The entries of a folder, biggest first. Sizes are measured on a few threads at once.
-pub fn children(dir: &Path) -> Vec<Item> {
-    let paths: Vec<PathBuf> = fs::read_dir(dir).map(|rd| rd.flatten().map(|e| e.path()).collect()).unwrap_or_default();
-    let (next, found) = (AtomicUsize::new(0), Mutex::new(Vec::new()));
+/// The entries of a folder, at once: files come with their size, folders wait for `measure`.
+pub fn list(dir: &Path) -> Vec<Item> {
+    let paths = fs::read_dir(dir).map(|rd| rd.flatten().map(|e| e.path()).collect::<Vec<_>>()).unwrap_or_default();
+    paths
+        .into_iter()
+        .map(|path| {
+            let meta = fs::symlink_metadata(&path).ok();
+            let is_dir = meta.as_ref().is_some_and(|m| m.is_dir());
+            let bytes = if is_dir { None } else { Some(meta.as_ref().map_or(0, used)) };
+            let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            Item { path, name, bytes, is_dir }
+        })
+        .collect()
+}
+
+/// Measures the folders of `items` on a few threads, calling `done` with each as soon as it is known.
+pub fn measure(items: &[Item], done: impl Fn(&Path, u64) + Sync) {
+    let pending: Vec<&Item> = items.iter().filter(|i| i.bytes.is_none()).collect();
+    let next = AtomicUsize::new(0);
     thread::scope(|s| {
-        for _ in 0..paths.len().min(8) {
+        for _ in 0..pending.len().min(8) {
             s.spawn(|| {
-                while let Some(path) = paths.get(next.fetch_add(1, Ordering::SeqCst)) {
-                    let is_dir = fs::symlink_metadata(path).is_ok_and(|m| m.is_dir());
-                    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                    let item = Item { path: path.clone(), name, bytes: size(path), is_dir };
-                    found.lock().unwrap_or_else(|e| e.into_inner()).push(item);
+                while let Some(item) = pending.get(next.fetch_add(1, Ordering::SeqCst)) {
+                    done(&item.path, size(&item.path));
                 }
             });
         }
     });
-    let mut items = found.into_inner().unwrap_or_else(|e| e.into_inner());
-    items.sort_by_key(|i| std::cmp::Reverse(i.bytes));
-    items
 }
 
 /// Only things inside the home folder, and never the home folder itself, may be removed.
@@ -275,15 +284,22 @@ mod tests {
     }
 
     #[test]
-    fn sizes_add_up_and_children_are_sorted() {
+    fn folders_are_measured_after_the_listing() {
         let dir = scratch("sizes");
         fs::create_dir_all(dir.join("big/inner")).unwrap();
         fs::write(dir.join("big/inner/a.bin"), vec![1u8; 200_000]).unwrap();
         fs::write(dir.join("small.txt"), b"hi").unwrap();
-        let items = children(&dir);
+        let mut items = list(&dir);
+        items.sort_by_key(|i| i.name.clone());
         assert_eq!(items.iter().map(|i| i.name.as_str()).collect::<Vec<_>>(), ["big", "small.txt"]);
-        assert!(items[0].is_dir && items[0].bytes >= 200_000 && !items[1].is_dir);
-        assert!(size(&dir) >= items[0].bytes + items[1].bytes);
+        assert!(items[0].is_dir && items[0].bytes.is_none(), "a folder is not measured yet");
+        assert!(items[1].bytes.is_some_and(|b| b > 0), "a file already has its size");
+        let found = std::sync::Mutex::new(Vec::new());
+        measure(&items, |path, bytes| found.lock().unwrap().push((path.to_path_buf(), bytes)));
+        let found = found.into_inner().unwrap();
+        assert_eq!(found.len(), 1, "only folders are measured");
+        assert!(found[0].0.ends_with("big") && found[0].1 >= 200_000);
+        assert!(size(&dir) >= found[0].1);
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -335,8 +351,7 @@ mod tests {
         for p in cleanable() {
             println!("clean: {} = {}", p.label, format_bytes(p.bytes));
         }
-        for i in children(&home).iter().take(5) {
-            println!("home: {} = {}", i.name, format_bytes(i.bytes));
-        }
+        let started = std::time::Instant::now();
+        measure(&list(&home), |p, b| println!("home: {} = {} after {:?}", p.display(), format_bytes(b), started.elapsed()));
     }
 }
