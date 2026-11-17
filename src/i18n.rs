@@ -84,14 +84,28 @@ fn os_language() -> Option<Lang> {
     String::from_utf8_lossy(&out.stdout).split(|c: char| !c.is_alphanumeric() && c != '-').find_map(Lang::from_code)
 }
 
+#[cfg(not(test))]
 static CURRENT: AtomicU8 = AtomicU8::new(0);
+// Tests run in parallel threads: one that switches the language must not change another's texts.
+#[cfg(test)]
+thread_local! {
+    static CURRENT: AtomicU8 = const { AtomicU8::new(0) };
+}
+
+fn with_current<R>(f: impl FnOnce(&AtomicU8) -> R) -> R {
+    #[cfg(not(test))]
+    return f(&CURRENT);
+    #[cfg(test)]
+    return CURRENT.with(f);
+}
 
 pub fn set(lang: Lang) {
-    CURRENT.store(Lang::ALL.iter().position(|l| *l == lang).unwrap_or(0) as u8, Ordering::Relaxed);
+    let i = Lang::ALL.iter().position(|l| *l == lang).unwrap_or(0) as u8;
+    with_current(|c| c.store(i, Ordering::Relaxed));
 }
 
 pub fn get() -> Lang {
-    Lang::ALL[(CURRENT.load(Ordering::Relaxed) as usize).min(Lang::ALL.len() - 1)]
+    Lang::ALL[(with_current(|c| c.load(Ordering::Relaxed)) as usize).min(Lang::ALL.len() - 1)]
 }
 
 fn index() -> &'static HashMap<&'static str, &'static [&'static str; 6]> {
@@ -195,6 +209,70 @@ const TABLE: &[(&str, [&str; 6])] = &[
     ("Actualizar seleccionadas", ["Update selected", "Atualizar selecionadas", "Mettre à jour la sélection", "Auswahl aktualisieren", "選択を更新", "更新所选"]),
     ("No hay actualizaciones.", ["No updates.", "Nenhuma atualização.", "Aucune mise à jour.", "Keine Updates.", "アップデートはありません。", "没有可用更新。"]),
     ("Ninguna app coincide con tu búsqueda.", ["No app matches your search.", "Nenhum app corresponde à busca.", "Aucune app ne correspond à votre recherche.", "Keine App passt zur Suche.", "検索に一致するアプリはありません。", "没有符合搜索的应用。"]),
+    // Storage
+    ("Almacenamiento", ["Storage", "Armazenamento", "Stockage", "Speicher", "ストレージ", "存储空间"]),
+    ("{0} libres de {1}", ["{0} free of {1}", "{0} livres de {1}", "{0} libres sur {1}", "{0} frei von {1}", "{1} 中 {0} 空き", "共 {1}，可用 {0}"]),
+    ("Calculando…", ["Calculating…", "Calculando…", "Calcul en cours…", "Wird berechnet…", "計算中…", "正在计算…"]),
+    ("Otros archivos", ["Other files", "Outros arquivos", "Autres fichiers", "Andere Dateien", "その他のファイル", "其他文件"]),
+    ("Se puede limpiar", ["Can be cleaned", "Pode ser limpo", "Peut être nettoyé", "Kann bereinigt werden", "クリーンアップ可能", "可清理"]),
+    ("Libre", ["Free", "Livre", "Libre", "Frei", "空き", "可用"]),
+    ("Nada que limpiar por ahora", ["Nothing to clean right now", "Nada para limpar agora", "Rien à nettoyer pour le moment", "Im Moment nichts zu bereinigen", "今は削除するものはありません", "暂时没有可清理的内容"]),
+    ("Limpiando…", ["Cleaning…", "Limpando…", "Nettoyage…", "Wird bereinigt…", "クリーンアップ中…", "正在清理…"]),
+    ("¿Borrar {0}? No se puede deshacer.", ["Delete {0}? This cannot be undone.", "Apagar {0}? Isso não pode ser desfeito.", "Supprimer {0} ? Cette action est irréversible.", "{0} löschen? Das lässt sich nicht rückgängig machen.", "{0} を削除しますか？ この操作は元に戻せません。", "删除 {0}？此操作无法撤销。"]),
+    ("Borrar", ["Delete", "Apagar", "Supprimer", "Löschen", "削除", "删除"]),
+    ("Liberar {0}", ["Free up {0}", "Liberar {0}", "Libérer {0}", "{0} freigeben", "{0} を空ける", "释放 {0}"]),
+    ("Qué ocupa más espacio", ["What takes the most space", "O que ocupa mais espaço", "Ce qui prend le plus de place", "Was am meisten Platz belegt", "容量を使っているもの", "占用空间最多的内容"]),
+    ("Volver a calcular", ["Recalculate", "Recalcular", "Recalculer", "Neu berechnen", "再計算", "重新计算"]),
+    ("Subir", ["Up", "Subir", "Remonter", "Nach oben", "上へ", "上一级"]),
+    ("Calculando tamaños…", ["Measuring sizes…", "Calculando tamanhos…", "Calcul des tailles…", "Größen werden ermittelt…", "サイズを計算中…", "正在计算大小…"]),
+    ("Carpeta vacía", ["Empty folder", "Pasta vazia", "Dossier vide", "Leerer Ordner", "空のフォルダ", "空文件夹"]),
+    ("Carpeta", ["Folder", "Pasta", "Dossier", "Ordner", "フォルダ", "文件夹"]),
+    ("Archivo", ["File", "Arquivo", "Fichier", "Datei", "ファイル", "文件"]),
+    ("¿Mover a la papelera?", ["Move to the trash?", "Mover para a lixeira?", "Mettre à la corbeille ?", "In den Papierkorb legen?", "ゴミ箱に移動しますか？", "移到废纸篓？"]),
+    ("Mover", ["Move", "Mover", "Mettre", "Verschieben", "移動", "移动"]),
+    ("Papelera", ["Trash", "Lixeira", "Corbeille", "Papierkorb", "ゴミ箱", "废纸篓"]),
+    ("Mostrar", ["Show", "Mostrar", "Afficher", "Anzeigen", "表示", "显示"]),
+    ("Se liberaron {0}", ["{0} freed", "{0} liberados", "{0} libérés", "{0} freigegeben", "{0} を空けました", "已释放 {0}"]),
+    ("{0} elementos estaban en uso y se dejaron", ["{0} items were in use and were left", "{0} itens estavam em uso e foram mantidos", "{0} éléments étaient utilisés et ont été conservés", "{0} Elemente waren in Gebrauch und blieben erhalten", "{0} 件は使用中のため残しました", "{0} 项正在使用，已保留"]),
+    ("«{0}» está en la papelera", ["“{0}” is in the trash", "“{0}” está na lixeira", "« {0} » est dans la corbeille", "„{0}“ liegt im Papierkorb", "「{0}」をゴミ箱に移動しました", "“{0}”已移到废纸篓"]),
+    ("No se pudo mover a la papelera: {0}", ["Could not move to the trash: {0}", "Não foi possível mover para a lixeira: {0}", "Impossible de mettre à la corbeille : {0}", "Konnte nicht in den Papierkorb gelegt werden: {0}", "ゴミ箱に移動できませんでした: {0}", "无法移到废纸篓：{0}"]),
+    ("Cachés de apps", ["App caches", "Caches de apps", "Caches des apps", "App-Caches", "アプリのキャッシュ", "应用缓存"]),
+    ("Registros", ["Logs", "Registros", "Journaux", "Protokolle", "ログ", "日志"]),
+    ("Compilaciones de Xcode", ["Xcode builds", "Compilações do Xcode", "Compilations Xcode", "Xcode-Builds", "Xcode のビルド", "Xcode 构建产物"]),
+    ("Archivos temporales", ["Temporary files", "Arquivos temporários", "Fichiers temporaires", "Temporäre Dateien", "一時ファイル", "临时文件"]),
+    ("Caché de Internet", ["Internet cache", "Cache da Internet", "Cache Internet", "Internet-Cache", "インターネットキャッシュ", "网络缓存"]),
+    ("Informes de errores", ["Error reports", "Relatórios de erros", "Rapports d'erreurs", "Fehlerberichte", "エラーレポート", "错误报告"]),
+    ("Se vuelven a crear solos cuando una app los necesita", ["Recreated automatically when an app needs them", "São recriados sozinhos quando um app precisa", "Recréés automatiquement quand une app en a besoin", "Werden von selbst neu angelegt, wenn eine App sie braucht", "アプリが必要とすると自動的に再作成されます", "应用需要时会自动重新生成"]),
+    ("Solo sirven para diagnosticar problemas", ["Only useful to diagnose problems", "Só servem para diagnosticar problemas", "Ne servent qu'à diagnostiquer des problèmes", "Nur zur Fehlerdiagnose nützlich", "問題の診断にのみ使われます", "仅用于诊断问题"]),
+    ("Se regeneran al compilar de nuevo", ["Rebuilt the next time you build", "São gerados de novo ao compilar", "Régénérés à la prochaine compilation", "Werden beim nächsten Build neu erzeugt", "次回ビルド時に再生成されます", "下次构建时会重新生成"]),
+    ("Solo los de más de un día", ["Only those older than a day", "Só os de mais de um dia", "Seulement ceux de plus d'un jour", "Nur die, die älter als ein Tag sind", "1 日以上前のもののみ", "仅限超过一天的文件"]),
+    ("Lo que ya borraste y sigue ocupando espacio", ["What you already deleted and still takes space", "O que você já apagou e ainda ocupa espaço", "Ce que vous avez déjà supprimé et qui prend encore de la place", "Bereits Gelöschtes, das noch Platz belegt", "削除済みでまだ容量を使っているもの", "已删除但仍占用空间的内容"]),
+    ("Páginas y archivos guardados por el navegador", ["Pages and files saved by the browser", "Páginas e arquivos salvos pelo navegador", "Pages et fichiers enregistrés par le navigateur", "Vom Browser gespeicherte Seiten und Dateien", "ブラウザーが保存したページとファイル", "浏览器保存的网页和文件"]),
+    ("Informes de cierres inesperados", ["Reports of unexpected quits", "Relatórios de fechamentos inesperados", "Rapports de fermetures inattendues", "Berichte über unerwartete Abstürze", "予期しない終了のレポート", "意外退出的报告"]),
+    ("Docker y Colima", ["Docker and Colima", "Docker e Colima", "Docker et Colima", "Docker und Colima", "Docker と Colima", "Docker 和 Colima"]),
+    ("En ejecución", ["Running", "Em execução", "En cours", "Läuft", "実行中", "运行中"]),
+    ("Apagada", ["Stopped", "Desligada", "Arrêtée", "Gestoppt", "停止中", "已停止"]),
+    ("Última vez usada: {0}", ["Last used: {0}", "Último uso: {0}", "Dernière utilisation : {0}", "Zuletzt benutzt: {0}", "最終使用: {0}", "上次使用：{0}"]),
+    ("Disco de la VM: {0}", ["VM disk: {0}", "Disco da VM: {0}", "Disque de la VM : {0}", "VM-Datenträger: {0}", "VM のディスク: {0}", "虚拟机磁盘：{0}"]),
+    ("Eliminar VM", ["Delete VM", "Excluir VM", "Supprimer la VM", "VM löschen", "VM を削除", "删除虚拟机"]),
+    ("Se borra la VM «{0}» con todo lo que tiene dentro. No se puede deshacer.", ["The VM “{0}” is deleted with everything inside it. This cannot be undone.", "A VM “{0}” é excluída com tudo o que há nela. Isso não pode ser desfeito.", "La VM « {0} » est supprimée avec tout son contenu. Cette action est irréversible.", "Die VM „{0}“ wird mit allem Inhalt gelöscht. Das lässt sich nicht rückgängig machen.", "VM「{0}」を中身ごと削除します。この操作は元に戻せません。", "将删除虚拟机“{0}”及其全部内容，此操作无法撤销。"]),
+    ("Eliminar sin usar ({0})", ["Delete unused ({0})", "Excluir sem uso ({0})", "Supprimer les inutilisées ({0})", "Ungenutzte löschen ({0})", "未使用を削除 ({0})", "删除未使用项 ({0})"]),
+    ("¿Eliminar {0} imágenes sin usar ({1})?", ["Delete {0} unused images ({1})?", "Excluir {0} imagens sem uso ({1})?", "Supprimer {0} images inutilisées ({1}) ?", "{0} ungenutzte Images löschen ({1})?", "未使用のイメージ {0} 件 ({1}) を削除しますか？", "删除 {0} 个未使用的镜像（{1}）？"]),
+    ("En uso", ["In use", "Em uso", "Utilisée", "In Benutzung", "使用中", "使用中"]),
+    ("Solo la usa un contenedor detenido", ["Only used by a stopped container", "Usada apenas por um contêiner parado", "Utilisée seulement par un conteneur arrêté", "Nur von einem gestoppten Container genutzt", "停止中のコンテナのみが使用", "仅被已停止的容器使用"]),
+    ("Sin usar", ["Unused", "Sem uso", "Inutilisée", "Ungenutzt", "未使用", "未使用"]),
+    ("Eliminar", ["Delete", "Excluir", "Supprimer", "Löschen", "削除", "删除"]),
+    ("¿Eliminar esta imagen?", ["Delete this image?", "Excluir esta imagem?", "Supprimer cette image ?", "Dieses Image löschen?", "このイメージを削除しますか？", "删除此镜像？"]),
+    ("Creada: {0}", ["Created: {0}", "Criada: {0}", "Créée : {0}", "Erstellt: {0}", "作成: {0}", "创建：{0}"]),
+    ("Contenedor detenido", ["Stopped container", "Contêiner parado", "Conteneur arrêté", "Gestoppter Container", "停止中のコンテナ", "已停止的容器"]),
+    ("Creado: {0}", ["Created: {0}", "Criado: {0}", "Créé : {0}", "Erstellt: {0}", "作成: {0}", "创建：{0}"]),
+    ("¿Eliminar este contenedor?", ["Delete this container?", "Excluir este contêiner?", "Supprimer ce conteneur ?", "Diesen Container löschen?", "このコンテナを削除しますか？", "删除此容器？"]),
+    ("¿Limpiar la caché de compilación?", ["Clear the build cache?", "Limpar o cache de compilação?", "Vider le cache de compilation ?", "Build-Cache leeren?", "ビルドキャッシュを消去しますか？", "清除构建缓存？"]),
+    ("Caché de compilación", ["Build cache", "Cache de compilação", "Cache de compilation", "Build-Cache", "ビルドキャッシュ", "构建缓存"]),
+    ("Se vuelve a generar al compilar de nuevo", ["Rebuilt the next time you build", "É gerado de novo ao compilar", "Régénéré à la prochaine compilation", "Wird beim nächsten Build neu erzeugt", "次回ビルド時に再生成されます", "下次构建时会重新生成"]),
+    ("Eliminando… puede tardar unos minutos", ["Deleting… this can take a few minutes", "Excluindo… pode levar alguns minutos", "Suppression… cela peut prendre quelques minutes", "Wird gelöscht… das kann einige Minuten dauern", "削除中… 数分かかることがあります", "正在删除…可能需要几分钟"]),
+    ("Tras borrar, el disco de la VM se compacta para devolver el espacio al equipo.", ["After deleting, the VM disk is compacted to give the space back to your computer.", "Depois de excluir, o disco da VM é compactado para devolver o espaço ao computador.", "Après la suppression, le disque de la VM est compacté pour rendre l'espace à l'ordinateur.", "Nach dem Löschen wird der VM-Datenträger verkleinert, damit der Platz an den Computer zurückgeht.", "削除後、VM のディスクを圧縮して空き容量をコンピューターに戻します。", "删除后会压缩虚拟机磁盘，把空间还给电脑。"]),
+    ("No se pudo eliminar: {0}", ["Could not delete: {0}", "Não foi possível excluir: {0}", "Suppression impossible : {0}", "Löschen fehlgeschlagen: {0}", "削除できませんでした: {0}", "无法删除：{0}"]),
     // Release banner
     ("Updateeer {0} está disponible", ["Updateeer {0} is available", "Updateeer {0} está disponível", "Updateeer {0} est disponible", "Updateeer {0} ist verfügbar", "Updateeer {0} が利用可能です", "Updateeer {0} 已发布"]),
     ("No se pudo actualizar: {0}", ["Could not update: {0}", "Não foi possível atualizar: {0}", "Mise à jour impossible : {0}", "Aktualisierung fehlgeschlagen: {0}", "アップデートできませんでした: {0}", "无法更新：{0}"]),
@@ -225,6 +303,10 @@ const TABLE: &[(&str, [&str; 6])] = &[
     ("Instalada el {0}", ["Installed on {0}", "Instalado em {0}", "Installée le {0}", "Installiert am {0}", "{0} にインストール", "安装于 {0}"]),
     ("Actualizar", ["Update", "Atualizar", "Mettre à jour", "Aktualisieren", "更新", "更新"]),
     ("Error desconocido", ["Unknown error", "Erro desconhecido", "Erreur inconnue", "Unbekannter Fehler", "不明なエラー", "未知错误"]),
+    ("Sin conexión a internet", ["No internet connection", "Sem conexão com a internet", "Pas de connexion Internet", "Keine Internetverbindung", "インターネットに接続されていません", "没有网络连接"]),
+    ("Revisa tu Wi-Fi o cable y vuelve a intentarlo.", ["Check your Wi-Fi or cable and try again.", "Verifique seu Wi-Fi ou cabo e tente novamente.", "Vérifiez votre Wi-Fi ou câble et réessayez.", "Prüfe WLAN oder Kabel und versuche es erneut.", "Wi-Fi またはケーブルを確認して、もう一度お試しください。", "请检查 Wi-Fi 或网线后重试。"]),
+    ("Revisando qué apps ya tienes…", ["Checking which apps you already have…", "Verificando quais apps você já tem…", "Vérification des apps déjà installées…", "Prüfe, welche Apps du schon hast…", "インストール済みのアプリを確認しています…", "正在检查你已安装的应用…"]),
+    ("Abrir App Store", ["Open App Store", "Abrir a App Store", "Ouvrir l'App Store", "App Store öffnen", "App Storeを開く", "打开 App Store"]),
     ("Reintentar", ["Retry", "Tentar de novo", "Réessayer", "Erneut versuchen", "再試行", "重试"]),
     ("En cola", ["Queued", "Na fila", "En attente", "In Warteschlange", "待機中", "排队中"]),
     ("Descargando", ["Downloading", "Baixando", "Téléchargement", "Lädt herunter", "ダウンロード中", "下载中"]),

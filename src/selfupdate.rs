@@ -453,6 +453,17 @@ mod tests {
     }
 
     #[test]
+    fn summary_renders_real_release_notes() {
+        let notes = "## Features\n\n- **macOS remembers the admin password.** It is stored in the Keychain.\n- **Settings open by themselves.** You only have to click *Allow*.\n- **Two macOS builds.** One `.dmg` for Apple Silicon (arm64) and one for Intel (x86_64).\n\n## Fixes\n\n- **Arch builds** no longer fail because of `Cargo.lock`.\n";
+        let s = summary(notes);
+        assert!(!s.contains('*') && !s.contains('`'), "{s}");
+        assert!(s.contains("– macOS remembers the admin password. It is stored"));
+        assert!(s.contains("click Allow."));
+        assert!(s.contains("One .dmg for Apple Silicon (arm64)"));
+        assert!(s.contains("Features:") && s.contains("Fixes:"));
+    }
+
+    #[test]
     fn a_replaced_binary_keeps_its_path() {
         // What current_exe() returns on Linux after the package manager swapped the file.
         assert_eq!(clean_exe(Path::new("/usr/bin/updateeer (deleted)")), PathBuf::from("/usr/bin/updateeer"));

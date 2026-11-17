@@ -175,6 +175,17 @@ impl Queue {
         }
     }
 
+    /// Sets the real progress of running items whose id starts with `prefix` (it replaces the estimate).
+    pub fn report(&mut self, prefix: &str, percent: f32) {
+        for (id, s) in &mut self.status {
+            if let Status::Updating(p) = s
+                && id.starts_with(prefix)
+            {
+                *p = percent;
+            }
+        }
+    }
+
     /// The next failure of `id` is final: no silent second attempt (it would ask for the
     /// administrator password again after the user just refused it).
     pub fn no_retry(&mut self, id: &str) {
@@ -312,13 +323,24 @@ mod tests {
         assert!(["a", "b", "c"].iter().all(|id| q.status(id) == Status::Available));
         assert!(!q.is_busy());
         // The killed processes report back: no retry, no failure.
-        q.finish("a", Err("Cancelado".into()));
+        q.finish("a", Err(crate::fail::Fail::Cancelled.into()));
         assert_eq!(q.status("a"), Status::Available);
         assert_eq!(q.failed_count(), 0);
         assert!(q.start_ready().is_empty());
         // One that finished anyway counts as done.
         q.finish("b", Ok(()));
         assert_eq!(q.status("b"), Status::Done);
+    }
+
+    #[test]
+    fn real_progress_replaces_the_estimate_of_its_manager_only() {
+        let mut q = Queue::new(["pacman:a".to_string(), "flatpak:b".to_string()], 4);
+        q.enqueue(["pacman:a", "flatpak:b"]);
+        q.start_ready();
+        q.creep(10.0);
+        q.report("pacman:", 12.0);
+        assert_eq!(q.status("pacman:a"), Status::Updating(12.0));
+        assert_ne!(q.status("flatpak:b"), Status::Updating(12.0));
     }
 
     #[test]
