@@ -18,7 +18,7 @@ use crate::discover;
 use crate::ui::{Page, UpdatesApp, cell, combo, search_field, segment};
 use crate::widgets::{self, Icon, Kind};
 
-fn header(ui: &mut Ui, title: &str, subtitle: &str) {
+pub(crate) fn header(ui: &mut Ui, title: &str, subtitle: &str) {
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing.y = 6.0;
         ui.label(RichText::new(title).size(36.0).family(display()));
@@ -27,7 +27,7 @@ fn header(ui: &mut Ui, title: &str, subtitle: &str) {
     ui.add_space(22.0);
 }
 
-fn card(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
+pub(crate) fn card(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
     Frame::new().fill(panel()).stroke(Stroke::new(1.0, line())).corner_radius(16).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.spacing_mut().item_spacing = Vec2::ZERO;
@@ -41,7 +41,7 @@ fn empty(ui: &mut Ui, msg: &str) {
 }
 
 /// A 68px list row with hover and divider; returns its rect and the left/right content edges.
-fn list_row(ui: &mut Ui) -> (egui::Rect, f32, f32) {
+pub(crate) fn list_row(ui: &mut Ui) -> (egui::Rect, f32, f32) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 68.0), Sense::hover());
     if ui.rect_contains_pointer(rect) {
         ui.painter().rect_filled(rect, 0, tint(6));

@@ -19,6 +19,8 @@ pub enum Icon {
     Busy,
     /// Wi-Fi waves crossed out: no connection.
     Offline,
+    /// A drive: how full the disk is.
+    Disk,
 }
 
 /// Draws a 24x24 stroke icon scaled to `rect`.
@@ -90,6 +92,11 @@ pub fn icon(ui: &Ui, rect: Rect, kind: Icon, color: Color32, width: f32) {
             line(&[(15.5, 8.5), (13.2, 13.2), (8.5, 15.5), (10.8, 10.8), (15.5, 8.5)]);
         }
         Icon::Check => line(&[(5.0, 12.5), (9.5, 17.0), (19.0, 7.5)]),
+        Icon::Disk => {
+            painter.rect_stroke(Rect::from_min_size(p(3.0, 6.0), Vec2::new(18.0, 12.0) * s), CornerRadius::same((3.0 * s) as u8), stroke, egui::StrokeKind::Inside);
+            line(&[(3.0, 13.0), (21.0, 13.0)]);
+            painter.circle_filled(p(17.5, 15.7), 0.9 * s, color);
+        }
         Icon::Offline => {
             for r in [4.5, 9.0, 13.5] {
                 let arc: Vec<(f32, f32)> = (0..=12)

@@ -1,5 +1,6 @@
 //! The main window: app state, the sidebar and the frame around each page.
 mod banners;
+mod disk;
 pub mod icons;
 pub mod logos;
 pub mod pages;
@@ -96,6 +97,8 @@ pub enum Page {
     Installed,
     /// Catalog and search to install new apps.
     Discover,
+    /// Disk space: what to clean and what takes the most room.
+    Storage,
     History,
     Settings,
     /// First run: choose the interface language.
@@ -190,6 +193,7 @@ pub struct UpdatesApp {
     pub(crate) installed: Vec<App>,
     pub(crate) installed_rx: Option<Scan>,
     pub(crate) discover: crate::pages::Discover,
+    pub(crate) storage: disk::Storage,
     pub(crate) installed_stale: bool,
     pub(crate) installed_error: Option<String>,
     /// A source failed while others worked: shown so missing apps are not a mystery.
@@ -285,6 +289,7 @@ impl UpdatesApp {
             installed: Vec::new(),
             installed_rx: None,
             discover: crate::pages::Discover::new(),
+            storage: disk::Storage::new(),
             installed_stale: true,
             installed_error: None,
             installed_warning: None,
@@ -668,6 +673,7 @@ impl eframe::App for UpdatesApp {
                 Page::Updates => self.updates_page(ui),
                 Page::Installed => self.installed_page(ui),
                 Page::Discover => self.discover_page(ui),
+                Page::Storage => self.storage_page(ui),
                 Page::History => self.history_page(ui),
                 // Long pages scroll as a whole; the list pages scroll their rows under a fixed header.
                 Page::Settings => ScrollArea::vertical().auto_shrink(false).show(ui, |ui| self.settings_page(ui)).inner,
@@ -746,6 +752,7 @@ impl UpdatesApp {
             (Page::Updates, Icon::Download, t("Actualizaciones")),
             (Page::Installed, Icon::Grid, t("Instaladas")),
             (Page::Discover, Icon::Compass, t("Descubrir")),
+            (Page::Storage, Icon::Disk, t("Almacenamiento")),
             (Page::History, Icon::Clock, t("Historial")),
             (Page::Settings, Icon::Sliders, t("Ajustes")),
         ] {

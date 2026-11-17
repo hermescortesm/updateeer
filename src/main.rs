@@ -18,6 +18,7 @@ mod selfupdate;
 mod settings;
 mod setup;
 mod skip;
+mod storage;
 mod sudobridge;
 mod tray;
 mod ui;
